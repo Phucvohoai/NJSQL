@@ -1,3 +1,7 @@
+![MIT License](https://img.shields.io/badge/license-MIT-green)
+![Contributions welcome](https://img.shields.io/badge/contributions-welcome-brightgreen)
+![Java](https://img.shields.io/badge/language-Java-blue)
+
 # NJSQL
 
 NJSQL is a lightweight JSON-based database management system (DBMS) with SQL-like querying capabilities, implemented in Java. It aims to provide a simple yet powerful way to store, query, and manage data using a custom binary JSON format called NSON (Not Just JSON).
