@@ -19,3 +19,5 @@ NJSQL is a lightweight JSON-based database management system (DBMS) with SQL-lik
 1. Clone the repository:
 
    git clone https://github.com/Phucvohoai/NJSQL.git
+
+🐑 Your help makes NJSQL even better!
