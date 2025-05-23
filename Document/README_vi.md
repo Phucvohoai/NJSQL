@@ -1,4 +1,4 @@
-# 🗂️ NJSQL - Network JSON SQL
+# 🗂️ NJSQL - Not Just SQL
 
 **NJSQL** là một hệ cơ sở dữ liệu nhẹ, được xây dựng thủ công bằng **Java**, sử dụng **file JSON** để lưu trữ dữ liệu, đồng thời cho phép lập trình viên tương tác với dữ liệu bằng cú pháp **giống SQL**.
 

@@ -1,4 +1,4 @@
-# 🗂️ NJSQL - Network JSON SQL
+# 🗂️ NJSQL - Not Just SQL
 
 **NJSQL** is a lightweight, custom-built database engine written in **Java** that uses **JSON files** to store data, while allowing developers to interact with the database using **SQL-like commands**.
 
