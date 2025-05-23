@@ -1,0 +1,14 @@
+🌿 Giai đoạn 2 Tiến hóa (ĐANG TRIỂN KHAI 🚧)
+🧠 Bắt đầu thêm sức mạnh “pro dev”
+
+🔄 Khóa ngoại (FOREIGN KEY) & liên kết bảng
+
+🧾 Câu lệnh JOIN (sau khi có khóa ngoại)
+
+📊 Tối ưu hóa index nâng cao (index.json)
+
+🔐 Phân quyền user GRANTREVOKE, roles
+
+🧩 Giao diện quản lý DB đơn giản (Web UI)
+
+🧮 Hỗ trợ aggregate COUNT, SUM, GROUP BY

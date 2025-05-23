@@ -1,0 +1,162 @@
+TÀI LIỆU HƯỚNG DẪN SỬ DỤNG HỆ THỐNG NJSQL DÀNH CHO DEVELOPER
+1. Giới thiệu
+NJSQL (Network JSON SQL) là hệ quản trị cơ sở dữ liệu được viết bằng Java, lưu trữ dữ liệu dưới dạng file JSON, cho phép thao tác bằng câu lệnh SQL đơn giản trên dòng lệnh.
+
+Mục tiêu:
+
+Giúp lập trình viên thao tác cơ sở dữ liệu nhanh chóng mà không cần cài đặt MySQL, SQLite, v.v.
+
+Hỗ trợ quản lý người dùng, phân quyền chi tiết và lưu trữ dữ liệu có cấu trúc.
+
+2. Cài đặt
+2.1 Yêu cầu môi trường
+Java JDK 8 trở lên
+
+Hệ điều hành: Windows / Linux / macOS
+
+2.2 Khởi động hệ thống
+Giải nén thư mục NJSQL
+
+Chạy file run.bat (Windows) hoặc run.sh (Linux/macOS)
+
+Giao diện sẽ hiện:
+
+pgsql
+Sao chép
+Chỉnh sửa
+>> Welcome to NJSQL (Network JSON SQL)
+>> Type /help for commands. Type /exit to quit.
+NJSQL>
+3. Kiến trúc hệ thống
+Dữ liệu được lưu trong thư mục njsql_data/<tên_admin>/
+
+Mỗi database là một thư mục chứa các bảng dưới dạng JSON
+
+Có hai chế độ thao tác:
+
+CLI Mode: Sử dụng các lệnh hệ thống (/cre user, /grant, v.v.)
+
+SQL Mode: Thực thi câu lệnh SQL (SELECT, INSERT, v.v.)
+
+4. Hệ thống người dùng
+4.1 Tạo người dùng
+Lệnh:
+
+bash
+Sao chép
+Chỉnh sửa
+/cre user
+Người đầu tiên là admin
+
+Các user sau là user con trực thuộc admin
+
+4.2 Đăng nhập / Đăng xuất
+bash
+Sao chép
+Chỉnh sửa
+/login
+/logout
+5. Phân quyền người dùng
+Chỉ admin mới có quyền phân quyền.
+
+5.1 Cấp quyền
+bash
+Sao chép
+Chỉnh sửa
+/grant
+5.2 Thu hồi quyền
+bash
+Sao chép
+Chỉnh sửa
+/revoke
+5.3 Danh sách quyền hỗ trợ
+Quyền	Mô tả
+CREATE_DB	Tạo cơ sở dữ liệu
+CREATE_TABLE	Tạo bảng mới
+INSERT	Thêm dữ liệu vào bảng
+DELETE	Xoá dữ liệu
+UPDATE	Cập nhật dữ liệu
+SELECT	Truy vấn dữ liệu
+ALTER_TABLE	Sửa cấu trúc bảng
+6. Chế độ SQL
+Vào chế độ SQL:
+
+bash
+Sao chép
+Chỉnh sửa
+/sql
+Trong SQL Mode:
+
+Lệnh	Mô tả
+/r	Thực thi câu lệnh đã nhập
+/c	Xoá toàn bộ nội dung truy vấn đã gõ
+7. Câu lệnh SQL được hỗ trợ
+Lệnh SQL	Quyền yêu cầu
+CREATE DATABASE <tên>	CREATE_DB
+USE <tên_database>	-
+CREATE TABLE ...	CREATE_TABLE
+INSERT INTO ... VALUES (...)	INSERT
+DELETE FROM ... WHERE ...	DELETE
+UPDATE ... SET ... WHERE ...	UPDATE
+SELECT * FROM ...	SELECT
+DESCRIBE <tên_bảng>	SELECT
+ALTER TABLE ... ADD COLUMN ...	ALTER_TABLE
+8. Cấu trúc lưu trữ dữ liệu
+Thư mục njsql_data/ lưu toàn bộ dữ liệu người dùng:
+
+pgsql
+Sao chép
+Chỉnh sửa
+njsql_data/
+└── admin/
+    ├── users.json                  ← Danh sách user con
+    └── school/                    ← Tên database
+        ├── student.json           ← Dữ liệu bảng
+        └── student_schema.json    ← Định nghĩa schema bảng
+9. Ví dụ sử dụng
+9.1 Tạo user admin và user con
+bash
+Sao chép
+Chỉnh sửa
+/cre user
+# → Username: admin, Password: admin123
+/login
+# → Username: admin, Password: admin123
+
+/cre user
+# → Username: dev, Password: dev123
+/grant
+# → Permission: CREATE_DB
+# → User: dev
+9.2 Tạo database và bảng
+bash
+Sao chép
+Chỉnh sửa
+/logout
+/login
+# → Username: dev, Password: dev123
+
+/sql
+CREATE DATABASE test;
+USE test;
+CREATE TABLE users (id INT PRIMARY KEY, name TEXT);
+INSERT INTO users VALUES (1, "Alice");
+SELECT * FROM users;
+DESCRIBE users;
+10. Ghi chú quan trọng
+Chỉ user có quyền mới được thực thi thao tác tương ứng.
+
+Các file dữ liệu không nên chỉnh tay.
+
+Hệ thống chưa hỗ trợ JOIN, WHERE nhiều điều kiện, GROUP BY.
+
+11. Đóng góp / Phát triển
+Cấu trúc mở, có thể mở rộng hỗ trợ JOIN, kiểm tra ràng buộc, indexing.
+
+Phát triển thêm frontend tương tác qua API hoặc web-based admin tool.
+
+Cừu thấy bản này ổn chưa nè? Nếu muốn, Cừu con có thể:
+
+Xuất bản thành file README.md hoặc file Word/PDF.
+
+Tách thành hai phần: User Guide và Developer Guide nếu cần rõ hơn.

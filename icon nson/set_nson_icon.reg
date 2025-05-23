@@ -1,0 +1,16 @@
+Windows Registry Editor Version 5.00
+
+[HKEY_CLASSES_ROOT\.nson]
+@="NJSONFile"
+
+[HKEY_CLASSES_ROOT\NJSONFile]
+@="NJSQL NSON File"
+
+[HKEY_CLASSES_ROOT\NJSONFile\DefaultIcon]
+@="D:\\NJSQL\\NJSQL\\icon nson\\Nson_icon.png"
+
+[HKEY_CLASSES_ROOT\NJSONFile\shell\open\command]
+@="\"C:\\Windows\\System32\\notepad.exe\" \"%1\""
+
+[HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.nson\UserChoice]
+"ProgId"="NJSONFile"

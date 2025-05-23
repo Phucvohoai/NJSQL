@@ -1,8 +1,9 @@
 # Compiled class file
 *.class
 
-# Log file
+# Log files
 *.log
+*.tmp
 
 # BlueJ files
 *.ctxt
@@ -22,3 +23,21 @@
 # virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
 hs_err_pid*
 replay_pid*
+
+# IDE
+.idea/
+*.iml
+
+# Java build
+target/
+bin/
+
+# Temp folder
+temp/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Data folder
+njsql_data/
