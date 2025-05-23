@@ -129,10 +129,9 @@ NJSQL stores data under `njsql_data/<user_name>/`:
 ```
 njsql_data/
 └── <user_name>/
-    ├── users.json
+    ├── users.nson
     └── <database>/
-        ├── <table_name>.json
-        └── <table_name>_schema.json
+        └── <table_name>.nson
 ```
 
 - `.json`: Contains actual table data
