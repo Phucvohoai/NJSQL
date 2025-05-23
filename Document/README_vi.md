@@ -19,7 +19,7 @@ Phù hợp cho các developer muốn mô phỏng hoạt động SQL mà không c
 ## 📦 Cài đặt
 
 ### Yêu cầu
-- Java JDK 8 trở lên
+- Java JDK 23
 - Windows / Linux / macOS
 
 ### Cách chạy
@@ -129,10 +129,9 @@ NJSQL lưu dữ liệu trong thư mục `njsql_data/<tên_user>/`:
 ```
 njsql_data/
 └── <tên_user>/
-    ├── users.json
+    ├── users.nson
     └── <database>/
-        ├── <tên_bảng>.json
-        └── <tên_bảng>_schema.json
+        └── <tên_bảng>.json
 ```
 
 - `.json`: Chứa dữ liệu thực tế của bảng
