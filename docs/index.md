@@ -20,7 +20,7 @@ Ideal for developers who want to simulate SQL operations without setting up heav
 
 ### Requirements
 
-* Java JDK 8 or higher
+* Java JDK 23
 * Windows / Linux / macOS
 
 ### How to Run
