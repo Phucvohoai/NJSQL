@@ -158,6 +158,6 @@ This document helps you diagnose and fix common issues when working with NJSQL.
 
 Still stuck? Don’t worry!
 - Talk to your friendly NJSQL developer (aka 🐑 Cừu)
-- File coming soon at: `https://github.com/phucvo28/njsql`
+- File coming soon at: `https://github.com/phucvohoai/njsql`
 
 ---
