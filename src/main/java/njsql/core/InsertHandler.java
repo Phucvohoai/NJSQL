@@ -2,7 +2,9 @@ package njsql.core;
 
 import njsql.nson.NsonObject;
 import njsql.nson.NsonArray;
+import njsql.indexing.BTreeIndexManager;
 
+import njsql.models.User;
 import java.io.File;
 import java.io.OutputStreamWriter;
 import java.io.FileOutputStream;
@@ -11,13 +13,28 @@ import java.nio.file.Files;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.nio.channels.FileLock;
 import java.nio.channels.FileChannel;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.TreeMap;
+import java.util.HashMap;
 
+/**
+ * Handles SQL INSERT commands, adding new rows to a table and updating B-Tree indexes.
+ */
 public class InsertHandler {
 
+    /**
+     * Processes an INSERT SQL command, adding data to the specified table and updating indexes.
+     * @param sql The SQL INSERT command
+     * @param username The username of the authenticated user
+     * @param dbPath The path to the database directory
+     * @return The name of the table
+     * @throws Exception If the syntax is invalid, table doesn't exist, or write operation fails
+     */
     public static String handle(String sql, String username, String dbPath) throws Exception {
         Pattern pattern = Pattern.compile("INSERT INTO (\\w+)\\s*\\(([^)]+)\\)\\s*VALUES\\s*(.+);?", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
         Matcher matcher = pattern.matcher(sql.trim());
@@ -30,7 +47,7 @@ public class InsertHandler {
         String columnsPart = matcher.group(2).trim();
         String valuesSection = matcher.group(3).trim();
 
-        // Sử dụng dbPath để xây dựng đường dẫn bảng
+        // Construct table file path
         String tablePath = dbPath + "/" + table + ".nson";
         File tableFile = new File(tablePath);
 
@@ -38,12 +55,12 @@ public class InsertHandler {
             throw new Exception("Table '" + table + "' does not exist in database at '" + dbPath + "'.");
         }
 
-        // Đọc file .nson bằng NsonObject
+        // Read table data using NsonObject
         String fileContent = new String(Files.readAllBytes(tableFile.toPath()), StandardCharsets.UTF_8);
         NsonObject tableData;
         try {
             tableData = new NsonObject(fileContent);
-        } catch (org.json.JSONException e) {
+        } catch (Exception e) {
             throw new Exception("Failed to parse JSON of table '" + table + "' at '" + tablePath + "': " + e.getMessage());
         }
         NsonObject meta = tableData.getObject("_meta");
@@ -54,19 +71,10 @@ public class InsertHandler {
             throw new Exception("Invalid table structure for '" + table + "'. Missing '_meta', '_types', or 'data' in '" + tablePath + "'.");
         }
 
-        NsonArray indexCols = meta.getArray("index");
-        if (indexCols == null) {
-            indexCols = new NsonArray();
-        }
-
-        // Khởi tạo IndexManager
-        IndexManager indexManager = new IndexManager();
-        indexManager.loadIndexes(tablePath, data, indexCols);
-
-        // Tách danh sách cột
+        // Parse columns
         String[] insertColumns = columnsPart.split("\\s*,\\s*");
 
-        // Xử lý từng bộ giá trị trong VALUES
+        // Process each value tuple in VALUES
         Pattern tuplePattern = Pattern.compile("\\(([^)]+)\\)");
         Matcher tupleMatcher = tuplePattern.matcher(valuesSection);
         int newRowIndex = data.size();
@@ -74,10 +82,9 @@ public class InsertHandler {
         while (tupleMatcher.find()) {
             String valuesPart = tupleMatcher.group(1).trim();
 
-            // Tách giá trị
+            // Parse values
             Pattern valuePattern = Pattern.compile("'([^']*)'|([^,\\s]+)");
             Matcher valueMatcher = valuePattern.matcher(valuesPart);
-
             NsonArray insertValues = new NsonArray();
             while (valueMatcher.find()) {
                 String strVal = valueMatcher.group(1);
@@ -97,13 +104,13 @@ public class InsertHandler {
                 throw new Exception("Number of columns and values do not match.");
             }
 
-            // Tạo hàng mới
+            // Create new row
             NsonObject row = new NsonObject();
             for (String colName : types.keySet()) {
                 row.put(colName, null);
             }
 
-            // Điền giá trị từ INSERT
+            // Fill values from INSERT
             for (int i = 0; i < insertColumns.length; i++) {
                 String colName = insertColumns[i].trim();
                 if (types.containsKey(colName)) {
@@ -113,7 +120,7 @@ public class InsertHandler {
                 }
             }
 
-            // Xử lý autoincrement và default
+            // Handle autoincrement and default values
             NsonArray autoincrementCols = meta.getArray("autoincrement");
             if (autoincrementCols == null) {
                 autoincrementCols = new NsonArray();
@@ -142,7 +149,7 @@ public class InsertHandler {
                 }
             }
 
-            // Kiểm tra trùng primary key
+            // Check for duplicate primary key
             for (Object pkColObj : primaryKeyCols) {
                 String pkCol = pkColObj.toString();
                 Object newPkValue = row.get(pkCol);
@@ -156,12 +163,20 @@ public class InsertHandler {
                 }
             }
 
-            // Cập nhật chỉ mục
-            for (Object indexColObj : indexCols) {
-                String indexCol = indexColObj.toString();
-                Object value = row.get(indexCol);
-                if (value != null) {
-                    indexManager.updateIndex(indexCol, value, newRowIndex);
+            // Update B-Tree indexes
+            ObjectMapper mapper = new ObjectMapper();
+            Map<String, Object> tableJson = mapper.readValue(fileContent, Map.class);
+            Map<String, Object> indexes = (Map<String, Object>) tableJson.get("_indexes");
+            if (indexes != null) {
+                Map<String, Object> newRecord = new HashMap<>();
+                for (String key : row.keySet()) {
+                    newRecord.put(key, row.get(key));
+                }
+                for (Map.Entry<String, Object> entry : indexes.entrySet()) {
+                    String indexName = entry.getKey();
+                    Map<String, Object> index = (Map<String, Object>) entry.getValue();
+                    String column = (String) index.get("column");
+                    BTreeIndexManager.updateIndexOnInsert(dbPath, table, column, indexName, newRecord, newRowIndex);
                 }
             }
 
@@ -169,15 +184,15 @@ public class InsertHandler {
             newRowIndex++;
         }
 
-        // Cập nhật last_modified
+        // Update last_modified
         meta.put("last_modified", Instant.now().toString());
 
-        // Kiểm tra tableData trước khi ghi
+        // Validate tableData before writing
         if (tableData.getObject("_meta") == null || tableData.getObject("_types") == null || tableData.getArray("data") == null) {
             throw new Exception("Invalid table data for '" + table + "': Missing '_meta', '_types', or 'data' before writing.");
         }
 
-        // Ghi dữ liệu vào file với khóa tệp
+        // Write data to file with file locking
         FileOutputStream fos = null;
         FileChannel channel = null;
         FileLock lock = null;
@@ -191,7 +206,6 @@ public class InsertHandler {
             writer.write(json);
             writer.flush();
         } catch (Exception e) {
-            e.printStackTrace();
             throw new Exception("Failed to write to table '" + table + "' at '" + tablePath + "': " + e.getClass().getSimpleName() + (e.getMessage() != null ? " - " + e.getMessage() : ""));
         } finally {
             if (writer != null) {
@@ -224,11 +238,120 @@ public class InsertHandler {
             }
         }
 
-        // Kiểm tra tệp sau khi ghi
+        // Verify file after writing
         if (!tableFile.exists() || tableFile.length() == 0) {
             throw new Exception("Failed to write to table '" + table + "': File is empty or does not exist after writing.");
         }
 
         return table;
+    }
+    /**
+     * Parses an INSERT SQL command to create a row for real-time mode.
+     * @param sql The SQL INSERT command
+     * @param user The authenticated user
+     * @return A Map representing the new row
+     * @throws Exception If the syntax is invalid
+     */
+    public static Map<String, Object> parseInsert(String sql, User user) throws Exception {
+        Pattern pattern = Pattern.compile("INSERT INTO (\\w+)\\s*\\(([^)]+)\\)\\s*VALUES\\s*\\(([^)]+)\\)",
+                Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+        Matcher matcher = pattern.matcher(sql.trim());
+
+        if (!matcher.find()) {
+            throw new Exception("Invalid INSERT syntax for real-time mode. Expected: INSERT INTO <table> (<columns>) VALUES (<values>)");
+        }
+
+        String columnsPart = matcher.group(2).trim();
+        String valuesPart = matcher.group(3).trim();
+
+        String[] columns = columnsPart.split("\\s*,\\s*");
+        Pattern valuePattern = Pattern.compile("'([^']*)'|([^,\\s]+)");
+        Matcher valueMatcher = valuePattern.matcher(valuesPart);
+        List<Object> values = new ArrayList<>();
+        while (valueMatcher.find()) {
+            String strVal = valueMatcher.group(1);
+            String numVal = valueMatcher.group(2);
+            if (strVal != null) {
+                values.add(strVal);
+            } else {
+                try {
+                    values.add(Double.parseDouble(numVal));
+                } catch (NumberFormatException e) {
+                    values.add(numVal);
+                }
+            }
+        }
+
+        if (columns.length != values.size()) {
+            throw new Exception("Number of columns and values do not match in INSERT statement.");
+        }
+
+        Map<String, Object> row = new HashMap<>();
+        for (int i = 0; i < columns.length; i++) {
+            row.put(columns[i].trim(), values.get(i));
+        }
+
+        // Handle auto-increment and default values
+        String dbName = user.getCurrentDatabase();
+        if (dbName == null || dbName.isEmpty()) {
+            throw new Exception("No database selected for INSERT.");
+        }
+        String tableName = matcher.group(1).trim();
+        String tablePath = UserManager.getRootDirectory(user.getUsername()) + "/" + dbName + "/" + tableName + ".nson";
+        File tableFile = new File(tablePath);
+        if (!tableFile.exists()) {
+            throw new Exception("Table '" + tableName + "' does not exist.");
+        }
+
+        String fileContent = new String(Files.readAllBytes(tableFile.toPath()), StandardCharsets.UTF_8);
+        NsonObject tableData = new NsonObject(fileContent);
+        NsonObject meta = tableData.getObject("_meta");
+        NsonObject types = tableData.getObject("_types");
+        NsonArray data = tableData.getArray("data");
+
+        if (meta == null || types == null || data == null) {
+            throw new Exception("Invalid table structure for '" + tableName + "'.");
+        }
+
+        NsonArray autoincrementCols = meta.getArray("autoincrement");
+        if (autoincrementCols == null) {
+            autoincrementCols = new NsonArray();
+        }
+        int maxId = 0;
+        for (int i = 0; i < data.size(); i++) {
+            NsonObject existingRow = data.getObject(i);
+            Object idValue = existingRow.get("id");
+            if (idValue instanceof Number) {
+                maxId = Math.max(maxId, ((Number) idValue).intValue());
+            }
+        }
+
+        for (String colName : types.keySet()) {
+            if (!row.containsKey(colName)) {
+                if (autoincrementCols.contains(colName)) {
+                    row.put(colName, maxId + 1);
+                    maxId++;
+                } else if (colName.equals("created_at") && types.getString(colName).equals("datetime")) {
+                    row.put(colName, Instant.now().toString());
+                }
+            }
+        }
+
+        return row;
+    }
+
+    /**
+     * Extracts the table name from an INSERT SQL command.
+     * @param sql The SQL INSERT command
+     * @return The table name
+     * @throws Exception If the syntax is invalid
+     */
+    public static String getTableName(String sql) throws Exception {
+        Pattern pattern = Pattern.compile("INSERT INTO (\\w+)", Pattern.CASE_INSENSITIVE);
+        Matcher matcher = pattern.matcher(sql.trim());
+        if (!matcher.find()) {
+            throw new Exception("Invalid INSERT syntax. Cannot extract table name.");
+        }
+        return matcher.group(1).trim();
     }
 }

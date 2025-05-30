@@ -2,30 +2,32 @@ package njsql.core;
 
 import njsql.nson.NsonObject;
 import njsql.nson.NsonArray;
-import java.io.File;
-import java.nio.file.Files;
-import java.nio.charset.StandardCharsets;
-import java.util.HashMap;
 import java.util.Map;
-import java.util.ArrayList;
+import java.util.TreeMap;
 import java.util.List;
+import java.util.ArrayList;
 
 // Quản lý chỉ mục cho các cột trong bảng
 public class IndexManager {
 
     // Lưu chỉ mục: cột -> giá trị -> danh sách vị trí hàng
+    // Dùng TreeMap để sắp xếp key tự nhiên, tránh lỗi ép kiểu
     private Map<String, Map<Object, List<Integer>>> indexes;
 
     public IndexManager() {
-        indexes = new HashMap<>();
+        // Sắp xếp các cột theo tên (String natural order)
+        indexes = new TreeMap<>();
     }
 
-    // Tải chỉ mục từ tệp .nson
+    // Tải chỉ mục từ dữ liệu .nson
     public void loadIndexes(String tablePath, NsonArray data, NsonArray indexCols) throws Exception {
         indexes.clear();
         for (Object colObj : indexCols) {
             String column = colObj.toString();
-            Map<Object, List<Integer>> valueToRows = new HashMap<>();
+
+            // Dùng TreeMap để sắp xếp giá trị theo natural order
+            Map<Object, List<Integer>> valueToRows = new TreeMap<>();
+
             for (int i = 0; i < data.size(); i++) {
                 NsonObject row = data.getObject(i);
                 Object value = row.get(column);

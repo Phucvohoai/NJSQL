@@ -3,6 +3,8 @@ package njsql.core;
 import njsql.models.User;
 import njsql.nson.NsonObject;
 import njsql.nson.NsonArray;
+import njsql.indexing.BTreeIndexManager;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.File;
 import java.nio.charset.StandardCharsets;
@@ -14,12 +16,24 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Comparator;
+import java.util.TreeMap;
+import java.util.HashMap;
 
+/**
+ * Handles SQL SELECT commands, leveraging B-Tree indexes for efficient querying.
+ */
 public class SelectHandler {
 
     private static final String RED = "\u001B[31m";
     private static final String RESET = "\u001B[0m";
 
+    /**
+     * Processes a SELECT SQL command, returning formatted results.
+     * @param sql The SQL SELECT command
+     * @param user The authenticated user
+     * @return Formatted query results as a string
+     * @throws Exception If the syntax is invalid, table doesn't exist, or query fails
+     */
     public static String handle(String sql, User user) throws Exception {
         String dbName = user.getCurrentDatabase();
         if (dbName == null || dbName.isEmpty()) {
@@ -36,7 +50,7 @@ public class SelectHandler {
             throw new IllegalArgumentException("Syntax error: Missing 'FROM' keyword in SELECT query.");
         }
 
-        // Tạo các regex pattern riêng biệt
+        // Parse query components
         Pattern selectPattern = Pattern.compile("SELECT\\s+(.+?)\\s+FROM", Pattern.CASE_INSENSITIVE);
         Pattern fromPattern = Pattern.compile("FROM\\s+(\\w+)(?:\\s+(\\w+))?", Pattern.CASE_INSENSITIVE);
         Pattern joinPattern = Pattern.compile("(LEFT|RIGHT|INNER)?\\s*JOIN\\s+(\\w+)\\s+(\\w+)\\s+ON\\s+(\\w+)\\.(\\w+)\\s*=\\s*(\\w+)\\.(\\w+)", Pattern.CASE_INSENSITIVE);
@@ -44,7 +58,6 @@ public class SelectHandler {
         Pattern groupPattern = Pattern.compile("GROUP\\s+BY\\s+((?:\\w+\\.\\w+|\\w+)(?:\\s*,\\s*(?:\\w+\\.\\w+|\\w+))*)", Pattern.CASE_INSENSITIVE);
         Pattern orderPattern = Pattern.compile("ORDER\\s+BY\\s+((?:\\w+\\.\\w+|\\w+))(?:\\s+(ASC|DESC))?", Pattern.CASE_INSENSITIVE);
 
-        // Extract các thành phần của câu query
         Matcher selectMatcher = selectPattern.matcher(sql);
         String columnsPart = selectMatcher.find() ? selectMatcher.group(1).trim() : "*";
 
@@ -55,7 +68,7 @@ public class SelectHandler {
         String mainTable = fromMatcher.group(1).trim();
         String mainAlias = fromMatcher.group(2) != null ? fromMatcher.group(2).trim() : mainTable;
 
-        // Xử lý JOIN nếu có
+        // Handle JOIN
         Matcher joinMatcher = joinPattern.matcher(sql);
         String joinType = null, joinTable = null, joinAlias = null, leftTable = null, leftColumn = null, rightTable = null, rightColumn = null;
         if (joinMatcher.find()) {
@@ -68,14 +81,14 @@ public class SelectHandler {
             rightColumn = joinMatcher.group(7);
         }
 
-        // Xử lý WHERE clause
+        // Handle WHERE
         Matcher whereMatcher = wherePattern.matcher(sql);
         String whereClause = null;
         if (whereMatcher.find()) {
             whereClause = whereMatcher.group(1).trim();
         }
 
-        // Xử lý GROUP BY và ORDER BY
+        // Handle GROUP BY and ORDER BY
         Matcher groupMatcher = groupPattern.matcher(sql);
         String groupByColumns = groupMatcher.find() ? groupMatcher.group(1) : null;
 
@@ -86,7 +99,7 @@ public class SelectHandler {
             orderByDirection = orderMatcher.group(2) != null ? orderMatcher.group(2).toUpperCase() : "ASC";
         }
 
-        // Đọc dữ liệu từ table chính
+        // Load main table data
         String mainTablePath = rootDir + "/" + dbName + "/" + mainTable + ".nson";
         File mainTableFile = new File(mainTablePath);
         if (!mainTableFile.exists()) {
@@ -112,17 +125,10 @@ public class SelectHandler {
         if (mainData == null) {
             throw new IllegalArgumentException("Invalid table structure for '" + mainTable + "': Missing 'data'.");
         }
-        NsonArray mainIndexCols = mainMeta.getArray("index");
-        if (mainIndexCols == null) {
-            mainIndexCols = new NsonArray();
-        }
 
-        IndexManager mainIndexManager = new IndexManager();
-        mainIndexManager.loadIndexes(mainTablePath, mainData, mainIndexCols);
-
+        // Load join table data
         NsonArray joinData = null;
         NsonObject joinTypes = null;
-        IndexManager joinIndexManager = null;
         if (joinTable != null) {
             String joinTablePath = rootDir + "/" + dbName + "/" + joinTable + ".nson";
             File joinTableFile = new File(joinTablePath);
@@ -149,14 +155,9 @@ public class SelectHandler {
             if (joinData == null) {
                 throw new IllegalArgumentException("Invalid table structure for '" + joinTable + "': Missing 'data'.");
             }
-            NsonArray joinIndexCols = joinMeta.getArray("index");
-            if (joinIndexCols == null) {
-                joinIndexCols = new NsonArray();
-            }
-            joinIndexManager = new IndexManager();
-            joinIndexManager.loadIndexes(joinTablePath, joinData, joinIndexCols);
         }
 
+        // Parse columns
         List<String> columnNames = new ArrayList<>();
         Map<String, String> columnAliases = new HashMap<>();
         boolean hasAggregate = columnsPart.contains("COUNT(") || columnsPart.contains("SUM(");
@@ -208,6 +209,7 @@ public class SelectHandler {
 
         final String effectiveOrderByColumn = (orderByColumn != null && !orderByColumn.contains(".")) ? mainAlias + "." + orderByColumn : orderByColumn;
 
+        // Process data with index optimization
         List<NsonObject> resultData = new ArrayList<>();
         if (joinData != null) {
             if (joinType.equals("LEFT")) {
@@ -263,16 +265,66 @@ public class SelectHandler {
                 }
             }
         } else {
-            for (int i = 0; i < mainData.size(); i++) {
-                NsonObject row = mainData.getObject(i);
-                NsonObject wrapped = new NsonObject();
-                for (String key : mainTypes.keySet()) {
-                    wrapped.put(mainAlias + "." + key, row.get(key));
+            // Use index for simple equality WHERE clause
+            if (whereClause != null) {
+                Pattern simplePattern = Pattern.compile("(\\w+)\\s*=\\s*('[^']*'|[0-9]+)");
+                Matcher simpleMatcher = simplePattern.matcher(whereClause.trim());
+                if (simpleMatcher.matches()) {
+                    String column = simpleMatcher.group(1);
+                    String valueStr = simpleMatcher.group(2).replaceAll("^'|'$", "");
+
+                    if (mainTypes.containsKey(column)) {
+                        ObjectMapper mapper = new ObjectMapper();
+                        Map<String, Object> tableJson = mapper.readValue(mainFileContent, Map.class);
+                        Map<String, Object> indexes = (Map<String, Object>) tableJson.get("_indexes");
+                        String indexName = null;
+                        if (indexes != null) {
+                            for (Map.Entry<String, Object> entry : indexes.entrySet()) {
+                                Map<String, Object> index = (Map<String, Object>) entry.getValue();
+                                if (column.equals(index.get("column"))) {
+                                    indexName = entry.getKey();
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (indexName != null) {
+                            Map<String, Object> index = (Map<String, Object>) indexes.get(indexName);
+                            TreeMap<String, List<Integer>> indexMap = (TreeMap<String, List<Integer>>) index.get("map");
+                            String key = mainTypes.getString(column).equalsIgnoreCase("int") ? valueStr : valueStr;
+                            List<Integer> positions = indexMap.get(key);
+                            if (positions != null) {
+                                for (int pos : positions) {
+                                    NsonObject row = mainData.getObject(pos);
+                                    NsonObject wrapped = new NsonObject();
+                                    for (String key2 : mainTypes.keySet()) {
+                                        wrapped.put(mainAlias + "." + key2, row.get(key2));
+                                    }
+                                    resultData.add(wrapped);
+                                }
+                            }
+                            // Skip regular evaluation if index is used
+                            whereClause = null;
+                        }
+                    }
                 }
-                resultData.add(wrapped);
+            }
+
+            // Fallback to full scan if no index or complex WHERE
+            if (whereClause != null || resultData.isEmpty()) {
+                resultData.clear();
+                for (int i = 0; i < mainData.size(); i++) {
+                    NsonObject row = mainData.getObject(i);
+                    NsonObject wrapped = new NsonObject();
+                    for (String key : mainTypes.keySet()) {
+                        wrapped.put(mainAlias + "." + key, row.get(key));
+                    }
+                    resultData.add(wrapped);
+                }
             }
         }
 
+        // Filter data
         List<NsonObject> filteredData = new ArrayList<>();
         for (NsonObject row : resultData) {
             if (whereClause == null || evaluateWhere(row, whereClause, mainTypes, joinTypes, mainAlias, joinAlias)) {
@@ -280,6 +332,7 @@ public class SelectHandler {
             }
         }
 
+        // Handle GROUP BY
         List<NsonObject> groupedData = filteredData;
         if (!groupByColumnList.isEmpty()) {
             Map<String, List<NsonObject>> groups = new HashMap<>();
@@ -314,6 +367,7 @@ public class SelectHandler {
             }
         }
 
+        // Handle ORDER BY
         if (effectiveOrderByColumn != null) {
             final String sortDirection = orderByDirection;
             Comparator<NsonObject> comparator = (r1, r2) -> {
@@ -332,6 +386,7 @@ public class SelectHandler {
             groupedData.sort(comparator);
         }
 
+        // Format output
         StringBuilder result = new StringBuilder();
         result.append("+");
         for (String col : columnNames) {
@@ -367,6 +422,9 @@ public class SelectHandler {
         return result.toString();
     }
 
+    /**
+     * Merges rows from main and join tables for JOIN operations.
+     */
     private static NsonObject mergeRows(NsonObject mainRow, NsonObject joinRow, String mainTable, String joinTable, NsonObject mainTypes, NsonObject joinTypes) {
         NsonObject mergedRow = new NsonObject();
         if (mainRow != null) {
@@ -382,6 +440,9 @@ public class SelectHandler {
         return mergedRow;
     }
 
+    /**
+     * Evaluates the WHERE clause for a row, used for non-indexed or complex conditions.
+     */
     private static boolean evaluateWhere(NsonObject row, String whereClause, NsonObject mainTypes, NsonObject joinTypes, String mainTable, String joinTable) throws Exception {
         Pattern wherePattern = Pattern.compile(
                 "([\\w.]+)\\s*([=><!]=?|<>|LIKE)\\s*('[^']*'|\\d+(\\.\\d+)?)",
