@@ -513,6 +513,8 @@ public class NJSQL {
         System.out.println("  \u001B[33m/approve <username>\u001B[0m  > Approve changes from a user (admin only)");
         System.out.println("  \u001B[33m/reject <username>\u001B[0m   > Reject changes from a user (admin only)");
         System.out.println("  \u001B[33m/notifications\u001B[0m       > Show all notifications from server");
+        System.out.println("  \u001B[33m/rt\u001B[0m                  > Enter Realtime Mode");
+        System.out.println("  \u001B[33m/flush\u001B[0m               > Flush pending data to disk");
 
         System.out.println("\n=========== \u001B[36mSQL MODE COMMANDS\u001B[0m ====================");
         System.out.println("  \u001B[32m/end\u001B[0m            > Exit SQL Mode");
