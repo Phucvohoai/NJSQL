@@ -413,11 +413,15 @@ public class SelectHandler {
             result.append("\n");
         }
 
-        result.append("+");
-        for (int i = 0; i < columnNames.size(); i++) {
-            result.append("-".repeat(20)).append("+");
+        if (groupedData.isEmpty()) {
+            result.append("No data found in table.\n");
+        } else {
+            result.append("+");
+            for (int i = 0; i < columnNames.size(); i++) {
+                result.append("-".repeat(20)).append("+");
+            }
+            result.append("\n");
         }
-        result.append("\n");
 
         return result.toString();
     }

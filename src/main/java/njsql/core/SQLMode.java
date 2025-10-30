@@ -10,7 +10,6 @@ import java.util.List;
 import java.util.Scanner;
 import java.io.File;
 import java.util.Map;
-import java.util.Set;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.Arrays;
 
@@ -20,10 +19,6 @@ public class SQLMode {
     private static final String RED = "\u001B[31m";
     private static final String RESET = "\u001B[0m";
 
-    /**
-     * Starts the SQL command-line interface for the given user.
-     * @param user The authenticated user
-     */
     public static void start(User user) {
         System.out.println("\u001B[36m---   ---   ---\u001B[0m");
         System.out.println(">> Entered SQL Mode as user:\u001B[36m " + user.getUsername() + "\u001B[0m !!");
@@ -34,7 +29,6 @@ public class SQLMode {
         List<String> sqlBuffer = new ArrayList<>();
         String rootDir = UserManager.getRootDirectory(user.getUsername());
 
-        // Check if user is admin
         NsonObject userConfig = UserManager.getUserConfig(user.getUsername());
         boolean isAdmin = userConfig != null && userConfig.getBoolean("isAdmin");
 
@@ -43,12 +37,12 @@ public class SQLMode {
         while (true) {
             String line = scanner.nextLine();
 
-            if (line.startsWith("--")) {
-                // Skip comment lines
+            if (line.trim().startsWith("--")) {
                 continue;
             }
 
             if (line.trim().equalsIgnoreCase("/end")) {
+                RealtimeTableManager.flushOnExit(user);
                 System.out.println("\u001B[33m<!> \u001B[0mExiting SQL Mode...");
                 break;
             }
@@ -93,8 +87,21 @@ public class SQLMode {
                 continue;
             }
             if (line.trim().equalsIgnoreCase("/r")) {
-                String fullSQL = String.join(" ", sqlBuffer).trim();
+                List<String> cleanedBuffer = new ArrayList<>();
+                for (String bufferLine : sqlBuffer) {
+                    String trimmedLine = bufferLine.trim();
+                    if (!trimmedLine.isEmpty() && !trimmedLine.startsWith("--")) {
+                        cleanedBuffer.add(trimmedLine);
+                    }
+                }
+                String fullSQL = String.join(" ", cleanedBuffer).trim();
                 sqlBuffer.clear();
+
+                if (fullSQL.isEmpty()) {
+                    System.out.println(RED + ">> ERROR: No SQL commands to execute." + RESET);
+                    System.out.print("SQL> ");
+                    continue;
+                }
 
                 String[] statements = fullSQL.split(";");
 
@@ -141,18 +148,29 @@ public class SQLMode {
                             System.out.println(">> \u001B[32mSuccess: Table | \u001B[0m" + tableName + "\u001B[32m | created successfully!" + RESET);
                         }
 
-                        else if (lower.startsWith("insert into") && RealtimeTableManager.ramTables.containsKey(user.getCurrentDatabase() + "." + InsertHandler.getTableName(sql))) {                            if (!isAdmin && !PermissionManager.hasPermission(user.getUsername(), "INSERT")) {
+                        else if (lower.startsWith("insert into")) {
+                            if (!isAdmin && !PermissionManager.hasPermission(user.getUsername(), "INSERT")) {
                                 throw new Exception("Permission denied for INSERT");
                             }
                             String dbName = user.getCurrentDatabase();
                             if (dbName == null || dbName.isEmpty()) {
                                 throw new Exception("No database selected. Please use 'USE <database>'.");
                             }
-                            String tableName = InsertHandler.getTableName(sql);
-                            RealtimeTableManager.handleInsert(sql, user, dbName, tableName);
-                            System.out.println(">> \u001B[32mSuccess: Data inserted into table | \u001B[0m" + tableName + "\u001B[32m | in real-time mode." + RESET);
+                            try {
+                                String tableName = InsertHandler.getTableName(sql);
+                                String tableKey = dbName + "." + tableName;
+                                if (RealtimeTableManager.ramTables.containsKey(tableKey)) {
+                                    RealtimeTableManager.handleInsert(sql, user, dbName, tableName);
+                                    System.out.println(">> \u001B[32mSuccess: Data inserted into table | \u001B[0m" + tableName + "\u001B[32m | in real-time mode." + RESET);
+                                } else {
+                                    String dbPath = rootDir + "/" + dbName;
+                                    InsertHandler.handle(sql, user.getUsername(), dbPath);
+                                    System.out.println(">> \u001B[32mSuccess: Data inserted into table | \u001B[0m" + tableName + "\u001B[32m |." + RESET);
+                                }
+                            } catch (Exception e) {
+                                System.out.println(RED + ">> ERROR: Failed to insert data: " + e.getMessage() + RESET);
+                            }
                         }
-
                         else if (lower.startsWith("delete from")) {
                             if (!isAdmin && !PermissionManager.hasPermission(user.getUsername(), "DELETE")) {
                                 throw new Exception("Permission denied for DELETE");
@@ -161,7 +179,8 @@ public class SQLMode {
                             System.out.println(">>\u001B[32m Success: Data deleted from table | \u001B[0m" + table + "\u001B[32m |." + RESET);
                         }
 
-                        else if (lower.startsWith("update") && RealtimeTableManager.ramTables.containsKey(user.getCurrentDatabase() + "." + UpdateHandler.getTableName(sql))) {                            if (!isAdmin && !PermissionManager.hasPermission(user.getUsername(), "UPDATE")) {
+                        else if (lower.startsWith("update")) {
+                            if (!isAdmin && !PermissionManager.hasPermission(user.getUsername(), "UPDATE")) {
                                 throw new Exception("Permission denied for UPDATE");
                             }
                             String dbName = user.getCurrentDatabase();
@@ -169,8 +188,14 @@ public class SQLMode {
                                 throw new Exception("No database selected. Please use 'USE <database>'.");
                             }
                             String tableName = UpdateHandler.getTableName(sql);
-                            RealtimeTableManager.handleUpdate(sql, user, dbName, tableName);
-                            System.out.println(">> \u001B[32mSuccess: Table | \u001B[0m" + tableName + "\u001B[32m | updated in real-time mode." + RESET);
+                            String tableKey = dbName + "." + tableName;
+                            if (RealtimeTableManager.ramTables.containsKey(tableKey)) {
+                                RealtimeTableManager.handleUpdate(sql, user, dbName, tableName);
+                                System.out.println(">> \u001B[32mSuccess: Table | \u001B[0m" + tableName + "\u001B[32m | updated in real-time mode." + RESET);
+                            } else {
+                                UpdateHandler.handle(sql, user);
+                                System.out.println(">> \u001B[32mSuccess: Table | \u001B[0m" + tableName + "\u001B[32m | updated." + RESET);
+                            }
                         }
 
                         else if (lower.startsWith("select")) {
@@ -287,14 +312,12 @@ public class SQLMode {
                                 throw new Exception("Permission denied for DROP_INDEX");
                             }
                             String[] tokens = sql.trim().split("\\s+");
-                            System.out.println("Tokens: " + Arrays.toString(tokens)); // Log để debug
                             if (tokens.length >= 4 && tokens[0].equalsIgnoreCase("DROP") && tokens[1].equalsIgnoreCase("INDEX")) {
                                 String indexName = tokens[2];
-                                String tableName = tokens.length > 4 && tokens[3].equalsIgnoreCase("ON") ? tokens[4] : null;
+                                String tableName = tokens.length > 4 && tokens[3].equalsIgnoreCase("ON") ? tokens[4].replace(";", "") : null;
                                 if (tableName == null) {
                                     throw new Exception("Invalid DROP INDEX syntax. Expected: DROP INDEX index_name ON table_name");
                                 }
-                                // Xóa index
                                 String dbPath = UserManager.getRootDirectory(user.getUsername()) + "/" + user.getCurrentDatabase();
                                 File file = new File(dbPath + "/" + tableName + ".nson");
                                 ObjectMapper mapper = new ObjectMapper();
@@ -304,27 +327,17 @@ public class SQLMode {
                                     indexes.remove(indexName);
                                     tableJson.put("_indexes", indexes);
                                     mapper.writerWithDefaultPrettyPrinter().writeValue(file, tableJson);
-                                    System.out.println("Index '" + indexName + "' dropped from table '" + tableName + "'");
-                                    return; // hoặc xóa luôn dòng return
+                                    System.out.println(GREEN + ">> Index '" + indexName + "' dropped from table '" + tableName + "'" + RESET);
                                 } else {
                                     throw new Exception("Index '" + indexName + "' does not exist on table '" + tableName + "'");
                                 }
+                            } else {
+                                throw new Exception("Invalid DROP INDEX syntax. Expected: DROP INDEX index_name ON table_name");
                             }
-                            String indexName = tokens[1].trim();
-                            String tableName = tokens[3].replace(";", "").trim();
-
-                            String dbName = user.getCurrentDatabase();
-                            if (dbName == null || dbName.isEmpty()) {
-                                throw new Exception("No database selected. Please use 'USE <database>'");
-                            }
-
-                            String dbPath = rootDir + "/" + dbName;
-                            BTreeIndexManager.dropBTreeIndex(dbPath, tableName, indexName);
-                            System.out.println(GREEN + ">> Index '" + indexName + "' dropped from table '" + tableName + "'" + RESET);
                         }
 
                         else {
-                            System.out.println(RED + ">> ERROR: Unsupported SQL command." + RESET);
+                            System.out.println(RED + ">> ERROR: Unsupported SQL command: " + sql + RESET);
                         }
 
                     } catch (Exception e) {
@@ -337,7 +350,38 @@ public class SQLMode {
             }
 
             sqlBuffer.add(line);
-            RealtimeTableManager.flushOnExit(user);
         }
-}
+    }
+    private static List<String> splitSQLStatements(String sql) {
+        List<String> statements = new ArrayList<>();
+        StringBuilder currentStatement = new StringBuilder();
+        boolean inQuote = false;
+        char prevChar = 0;
+
+        for (int i = 0; i < sql.length(); i++) {
+            char c = sql.charAt(i);
+
+            if (c == '\'' && prevChar != '\\') {
+                inQuote = !inQuote;
+            } else if (c == ';' && !inQuote) {
+                String stmt = currentStatement.toString().trim();
+                if (!stmt.isEmpty()) {
+                    statements.add(stmt);
+                }
+                currentStatement.setLength(0);
+                continue;
+            }
+
+            currentStatement.append(c);
+            prevChar = c;
+        }
+
+        // Add last statement if exists
+        String lastStmt = currentStatement.toString().trim();
+        if (!lastStmt.isEmpty()) {
+            statements.add(lastStmt);
+        }
+
+        return statements;
+    }
 }

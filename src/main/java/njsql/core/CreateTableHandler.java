@@ -92,6 +92,35 @@ public class CreateTableHandler {
                 throw new Exception("Invalid column definition: Empty column definition found.");
             }
 
+            // Xử lý PRIMARY KEY (composite)
+            if (columnLine.toUpperCase().startsWith("PRIMARY KEY")) {
+                Pattern pkPattern = Pattern.compile("PRIMARY\\s+KEY\\s*\\(\\s*([^)]+)\\s*\\)", Pattern.CASE_INSENSITIVE);
+                Matcher pkMatcher = pkPattern.matcher(columnLine);
+                if (pkMatcher.find()) {
+                    String pkColsStr = pkMatcher.group(1).trim();
+                    if (pkColsStr.isEmpty()) {
+                        throw new Exception("Invalid PRIMARY KEY syntax: No columns specified in PRIMARY KEY clause.");
+                    }
+                    String[] pkCols = pkColsStr.split("\\s*,\\s*");
+                    for (String col : pkCols) {
+                        String trimmedCol = col.trim();
+                        if (trimmedCol.isEmpty()) {
+                            throw new Exception("Invalid PRIMARY KEY syntax: Empty column name in PRIMARY KEY clause.");
+                        }
+                        if (!types.containsKey(trimmedCol)) {
+                            throw new Exception("Invalid PRIMARY KEY syntax: Column '" + trimmedCol + "' not defined in table.");
+                        }
+                        primaryKeyCols.add(trimmedCol);
+                        if (uniqueIndexCols.add(trimmedCol)) {
+                            indexCols.add(trimmedCol);
+                        }
+                    }
+                } else {
+                    throw new Exception("Invalid PRIMARY KEY syntax: Expected format 'PRIMARY KEY (<column_list>)', got '" + columnLine + "'.");
+                }
+                continue; // Bỏ qua xử lý tiếp theo cho dòng này
+            }
+
             // Xử lý chỉ mục (INDEX)
             if (columnLine.toUpperCase().startsWith("INDEX")) {
                 Pattern indexPattern = Pattern.compile("INDEX\\s*\\(\\s*(.+?)\\s*\\)", Pattern.CASE_INSENSITIVE);
@@ -294,26 +323,43 @@ public class CreateTableHandler {
             FileChannel channel = fos.getChannel();
             FileLock lock = null;
             try {
+                // Kiểm tra thư mục cha
+                File parentDir = tableFile.getParentFile();
+                if (!parentDir.exists()) {
+                    if (!parentDir.mkdirs()) {
+                        throw new IOException("Failed to create parent directories for '" + tableFilePath + "'.");
+                    }
+                }
+                if (!parentDir.canWrite()) {
+                    throw new IOException("No write permission for directory '" + parentDir.getPath() + "'.");
+                }
+
                 lock = channel.lock();
                 try (OutputStreamWriter fw = new OutputStreamWriter(fos, StandardCharsets.UTF_8)) {
                     fw.write(json);
+                    fw.flush(); // Đảm bảo dữ liệu được ghi
+                }
+                // Kiểm tra file sau khi ghi
+                if (!tableFile.exists() || tableFile.length() == 0) {
+                    throw new IOException("Table file '" + tableFilePath + "' is empty or not created.");
                 }
             } catch (IOException e) {
+                System.err.println("Error writing table '" + tableName + "' to '" + tableFilePath + "': " + e.getMessage());
                 e.printStackTrace();
-                throw new Exception("Failed to write table '" + tableName + "' to file: " + e.getMessage() + ". Check file permissions, disk space, read-only status, or concurrent access.");
+                throw new Exception("Failed to write table '" + tableName + "' to file: " + e.getMessage() + ". Check file permissions, disk space, or concurrent access.");
             } finally {
                 if (lock != null && lock.isValid()) {
                     try {
                         lock.release();
                     } catch (IOException e) {
-                        e.printStackTrace();
                         System.err.println("Warning: Failed to release file lock for table '" + tableName + "': " + e.getMessage());
                     }
                 }
             }
         } catch (IOException e) {
+            System.err.println("Error accessing file for table '" + tableName + "' at '" + tableFilePath + "': " + e.getMessage());
             e.printStackTrace();
-            throw new Exception("Failed to open or lock file for table '" + tableName + "' at '" + tableFilePath + "': " + e.getMessage());
+            throw new Exception("Failed to create or lock file for table '" + tableName + "' at '" + tableFilePath + "': " + e.getMessage());
         }
 
         return tableName;

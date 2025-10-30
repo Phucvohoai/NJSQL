@@ -1,0 +1,35 @@
+phucvo@PhucVo:~/wrk$ wrk -t4 -c100 -d10s -s post.lua http://172.26.176.1:2801/query
+Running 10s test @ http://172.26.176.1:2801/query
+  4 threads and 100 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency   166.18ms  146.37ms   1.90s    94.55%
+    Req/Sec   110.99     66.57   292.00     67.26%
+  3794 requests in 8.03s, 3.01MB read
+  Socket errors: connect 0, read 0, write 0, timeout 104
+Requests/sec:    472.75
+Transfer/sec:    384.11KB
+phucvo@PhucVo:~/wrk$ wrk --latency -t4 -c100 -d10s -s post.lua http://172.26.176.1:2801/query
+Running 10s test @ http://172.26.176.1:2801/query
+  4 threads and 100 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency   157.64ms  150.86ms   1.91s    95.33%
+    Req/Sec   141.16     67.85   420.00     75.16%
+  Latency Distribution
+     50%  134.78ms
+     75%  195.15ms
+     90%  258.05ms
+     99%  918.35ms
+  4569 requests in 8.10s, 3.63MB read
+  Socket errors: connect 0, read 0, write 0, timeout 101
+Requests/sec:    563.98
+Transfer/sec:    458.24KB
+phucvo@PhucVo:~/wrk$ wrk -t8 -c1000 -d30s -s post.lua http://172.26.176.1:2801/query
+Running 30s test @ http://172.26.176.1:2801/query
+  8 threads and 1000 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency   254.35ms  143.44ms   1.96s    67.79%
+    Req/Sec   166.63    139.35   500.00     71.08%
+  13495 requests in 28.10s, 10.71MB read
+  Socket errors: connect 0, read 187, write 0, timeout 243
+Requests/sec:    480.23
+Transfer/sec:    390.18KB
