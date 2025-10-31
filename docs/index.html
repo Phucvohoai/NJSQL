@@ -811,7 +811,7 @@ chmod +x run.sh
                 </div>
 
                 <p style="margin: 2rem 0; text-align: center;">
-                    Server starts at <code style="background: var(--surface); padding: 0.25rem 0.5rem; border-radius: 6px; color: var(--primary);">http://localhost:2801</code>
+                    Server starts at <code style="background: var(--surface); padding: 0.25rem 0.5rem; border-radius: 6px; color: var(--primary);">http://localhost:2801/query</code>
                 </p>
 
                 <div class="code-block">
@@ -820,9 +820,9 @@ chmod +x run.sh
 NJSQL></pre>
                 </div>
                 <h3 style="color: var(--primary); margin: 2rem 0 1rem;">Key CLI Commands</h3>
-<div class="code-block">
-    <button class="copy-btn" onclick="copyCode(this)">Copy</button>
-    <pre>/help         → Show all commands
+            <div class="code-block">
+                <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                <pre>/help         → Show all commands
 /cre user     → Create user
 /login        → Login
 /sql          → Enter SQL Mode
@@ -834,9 +834,48 @@ NJSQL></pre>
 /zipdb        → Export DB to .njsql
 /unzipdb      → Import .njsql file
 /exit         → Quit</pre>
-</div>
             </div>
-            
+            <h3 style="color: var(--primary); margin: 2.5rem 0 1rem;">REST API: Execute SQL</h3>
+            <p style="color: var(--text-muted); margin-bottom: 1rem;">
+                Server exposes a <strong>JSON-over-HTTP API</strong> at <code style="background: var(--surface); padding: 0.25rem 0.5rem; border-radius: 6px; color: var(--primary);">POST http://0.0.0.0:2801/query</code>
+            </p>
+
+            <div class="code-block">
+                <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                <pre>{
+"username": "admin",
+"password": "123",
+"database": "company",
+"sql": "SELECT * FROM Users"
+}</pre>
+            </div>
+
+            <div class="code-block" style="margin-top: 1rem;">
+                <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                <pre>curl -X POST http://0.0.0.0:2801/query \\
+-H "Content-Type: application/json" \\
+-d '{
+    "username": "admin",
+    "password": "123",
+    "database": "company",
+    "sql": "SELECT * FROM Users LIMIT 5"
+    }'</pre>
+            </div>
+
+            <p style="margin-top: 1.5rem; color: var(--text-muted); font-size: 0.95rem;">
+                <strong>Returns:</strong> <code>{ "success": true, "data": [...], "columns": [...] }</code><br>
+                <strong>Supported:</strong> SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, etc.
+            </p>
+
+            <div class="feature-card" style="margin-top: 1.5rem; padding: 1rem 1.5rem;">
+                <p style="margin: 0; font-size: 0.9rem;">
+                    <strong>Security:</strong> Authentication via <code>username</code> + <code>password</code><br>
+                    <strong>Permissions:</strong> Enforced per-user (RBAC)<br>
+                    <strong>Multi-DB:</strong> Switch via <code>database</code> field
+                </p>
+            </div>
+            </div>
+                
         </div>
     </section>
 
