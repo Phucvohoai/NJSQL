@@ -58,7 +58,7 @@ It combines the **flexibility of NoSQL** (JSON-like storage) with **SQL-level da
 ## 🛠️ Installation & Usage
 
 ### Requirements
-- Java JDK 17+
+- Java JDK 23+
 
 ### Installation
 ```bash
