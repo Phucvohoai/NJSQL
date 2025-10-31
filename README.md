@@ -1,59 +1,57 @@
 ![MIT License](https://img.shields.io/badge/license-MIT-green)
-![Contributions welcome](https://img.shields.io/badge/contributions-welcome-brightgreen)
 ![Java](https://img.shields.io/badge/language-Java-blue)
+![High Performance](https://img.shields.io/badge/performance-3100%20QPS-orange)
+![Contributions Welcome](https://img.shields.io/badge/contributions-welcome-brightgreen)
 
 # NJSQL (Not Just SQL)
 
-NJSQL is a **high-performance, standalone database management system (DBMS)** written **from scratch in Java**.  
-It features a **hybrid architecture**, combining the flexibility of NoSQL (JSON storage) with the relational integrity of SQL.
+NJSQL is a **high-performance, standalone DBMS** written entirely in **Java**.  
+It combines the **flexibility of NoSQL** (JSON-like storage) with **SQL-level data integrity**.
 
-Unlike embedded libraries like SQLite, NJSQL runs as a **standalone server**, ideal for modern development, testing, and prototyping environments.
-
----
-
-## 🌟 Highlights
-
-- **Not Just SQL Architecture**: Flexible `.nson` (Not Just JSON) data storage with strict relational constraints and SQL-like querying.  
-- **Git-inspired Data Management**: Supports clone, push, merge, and conflict resolution for parallel development across multiple machines.  
-- **High-performance Core**: Engine benchmarks reach ~3100 QPS on a 16GB RAM laptop.
+> NJSQL is **not an embedded library** like SQLite; it runs as a **standalone server**, ideal for modern development, testing, and prototyping.
 
 ---
 
-## 🚀 Performance Benchmark
+## 🌟 Key Features
+
+### 1. Hybrid Data Storage
+- Stores data in `.nson` format (**Not Just JSON**).  
+- Supports relational constraints: `PRIMARY_KEY`, `UNIQUE`, `NOT_NULL`, `FOREIGN_KEY` (with `ON_DELETE: CASCADE`).  
+- SQL-like querying: `SELECT`, `INSERT`, `UPDATE`, `DELETE` with `WHERE`.
+
+### 2. Git-inspired Versioning
+- Clone, push, and manage data versions across multiple machines.  
+- Supports **parallel development** and **conflict resolution**.  
+- Merge updates seamlessly from concurrent users.
+
+### 3. Performance & Scalability
+- Optimized indexing: **B-Tree** / **Hash**.  
+- Core engine benchmark: **~3100 QPS** on a 16GB RAM laptop.  
+- Minimal HTTP API overhead; engine designed for max efficiency.
+
+### 4. Security & Management
+- User authentication and fine-grained permissions.  
+- Command-line interface (CLI) for managing DBs, users, and queries.  
+
+---
+
+## 🚀 Roadmap
+
+- Replace HTTP API with **gRPC** for full engine performance.  
+- Optimize JSON parsing using **Jackson/Gson streaming**.  
+- Implement caching for authentication and hot data.  
+- Separate query processing from HTTP listener for stability.  
+- Develop **BQL (Behavior Query Language)** for advanced queries.
+
+---
+
+## ⚡ Performance Benchmark
 
 - **Environment:** MSI Laptop, AMD Ryzen 5, 16GB RAM  
-- **Test 1:** HTTP API via port 2801 (`wrk`)  
-- **Test 2:** Core Engine direct calls (`NJSQLBench.java`)  
+- **HTTP API Test:** `wrk` on port 2801  
+- **Core Engine Test:** `NJSQLBench.java` direct calls  
 
-**Result:** Core engine is extremely fast. HTTP API latency is the main bottleneck due to network overhead and JSON parsing.
-
----
-
-## ✨ Key Features
-
-### 1. Git-like Data Versioning
-- Version control with **clone and push** commands.  
-- Parallel development with multiple machines.  
-- Automatic **merge** and **conflict handling**.
-
-### 2. SQL Core & Engine
-- **Indexing:** B-Tree / Hash indexes for ~3100 QPS query performance.  
-- **Constraints:** PRIMARY_KEY, UNIQUE, NOT_NULL, FOREIGN_KEY (with ON_DELETE: CASCADE).  
-- **CRUD Queries:** Full support for SELECT, INSERT, UPDATE, DELETE with WHERE clauses.
-
-### 3. Security & Management
-- **User & Permission Management:** Fine-grained grant/revoke.  
-- **Command-line Interface (CLI):** Intuitive and easy-to-use.
-
----
-
-## 🛣️ Roadmap
-
-- Optimize HTTP API with **gRPC** to unlock full Core Engine performance.  
-- Accelerate JSON parsing using streaming libraries (Jackson/Gson).  
-- Implement caching for user authentication to reduce latency.  
-- Separate query thread pool from HTTP listener for stability.  
-- Develop **BQL (Behavior Query Language)** for advanced querying.
+> Core engine is extremely fast; primary bottleneck is network & JSON parsing.
 
 ---
 
@@ -65,3 +63,14 @@ Unlike embedded libraries like SQLite, NJSQL runs as a **standalone server**, id
 ### Installation
 ```bash
 git clone https://github.com/Phucvohoai/NJSQL.git
+```
+
+Running the Server
+Run the startup script (default: localhost:2801)
+
+Use CLI to connect, manage, and query databases
+
+###💡 Author
+> Võ Hoài Phúc (Phucvohoai) – Passionate about building core system technology and solving complex system challenges.
+
+Your contributions make NJSQL even better!
