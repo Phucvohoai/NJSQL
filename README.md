@@ -70,7 +70,7 @@ Run the startup script (default: localhost:2801)
 
 Use CLI to connect, manage, and query databases
 
-###💡 Author
-> Võ Hoài Phúc (Phucvohoai) – Passionate about building core system technology and solving complex system challenges.
+### Author
+- Võ Hoài Phúc (Phucvohoai) – Passionate about building core system technology and solving complex system challenges.
 
 Your contributions make NJSQL even better!
