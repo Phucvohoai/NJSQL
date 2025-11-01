@@ -3,15 +3,14 @@ setlocal EnableDelayedExpansion
 title Run NJSQL Engine
 cls
 
-REM Đặt encoding UTF-8 cho CMD
+REM Set UTF-8 encoding for CMD
 chcp 65001 > nul
 
 echo Starting NJSQL...
 
-REM Xác định thư mục hiện tại
 set "CURRENT_DIR=%~dp0"
 
-REM Kiểm tra các file jar trong thư mục libs
+REM Check required jar files
 if not exist "%CURRENT_DIR%libs\json-20230227.jar" (
     echo ERROR: json-20230227.jar not found in libs!
     pause
@@ -33,10 +32,10 @@ if not exist "%CURRENT_DIR%libs\jackson-databind-2.18.3.jar" (
     exit /b
 )
 
-REM Khai báo classpath với thư viện trong libs + class trong bin
+REM Set classpath
 set "CLASSPATH=%CURRENT_DIR%bin;%CURRENT_DIR%libs\json-20230227.jar;%CURRENT_DIR%libs\jackson-core-2.18.3.jar;%CURRENT_DIR%libs\jackson-annotations-2.18.3.jar;%CURRENT_DIR%libs\jackson-databind-2.18.3.jar"
 
-REM Chạy chương trình từ thư mục bin
+REM Run NJSQL
 java -cp "%CLASSPATH%" njsql.NJSQL
 
 if errorlevel 1 (
