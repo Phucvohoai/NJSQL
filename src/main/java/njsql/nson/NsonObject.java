@@ -6,10 +6,14 @@ import org.json.JSONArray;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-public class NsonObject extends LinkedHashMap<String, Object> {
-    public NsonObject() {}
+public class NsonObject extends LinkedHashMap<String, Object> implements Cloneable {
+
+    public NsonObject() {
+        super();
+    }
 
     public NsonObject(String json) {
+        super();
         JSONObject jsonObject = new JSONObject(json);
         for (String key : jsonObject.keySet()) {
             Object val = jsonObject.get(key);
@@ -76,6 +80,7 @@ public class NsonObject extends LinkedHashMap<String, Object> {
     public NsonObject getAsObject() {
         return this;
     }
+
     public JSONObject toJSONObject() {
         JSONObject jsonObject = new JSONObject();
         for (Map.Entry<String, Object> entry : this.entrySet()) {
@@ -90,12 +95,33 @@ public class NsonObject extends LinkedHashMap<String, Object> {
         }
         return jsonObject;
     }
+
     public boolean optBoolean(String key, boolean defaultValue) {
         Object value = get(key);
         if (value instanceof Boolean) {
             return (Boolean) value;
         }
-        return defaultValue; // Trả về giá trị mặc định nếu không phải boolean
+        return defaultValue;
     }
 
+    public Map<String, Object> toMap() {
+        return new LinkedHashMap<>(this);
+    }
+
+    // ✅ THÊM METHOD CLONE - QUAN TRỌNG!
+    @Override
+    public NsonObject clone() {
+        NsonObject cloned = new NsonObject();
+        for (Map.Entry<String, Object> entry : this.entrySet()) {
+            Object value = entry.getValue();
+            if (value instanceof NsonObject) {
+                cloned.put(entry.getKey(), ((NsonObject) value).clone());
+            } else if (value instanceof NsonArray) {
+                cloned.put(entry.getKey(), ((NsonArray) value).cloneArray());
+            } else {
+                cloned.put(entry.getKey(), value);
+            }
+        }
+        return cloned;
+    }
 }

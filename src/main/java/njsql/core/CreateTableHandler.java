@@ -3,77 +3,56 @@ package njsql.core;
 import njsql.models.User;
 import njsql.nson.NsonObject;
 import njsql.nson.NsonArray;
-import org.json.JSONObject;
 
-import java.io.File;
-import java.io.OutputStreamWriter;
-import java.io.FileOutputStream;
+import java.io.*;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.time.Instant;
-import java.util.List;
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.Arrays;
-import java.nio.channels.FileLock;
 import java.nio.channels.FileChannel;
-import java.io.IOException;
-import java.io.FileInputStream;
-import java.nio.file.Files;
+import java.nio.channels.FileLock;
+
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 
-// Xử lý câu lệnh CREATE TABLE
+/**
+ * Handles SQL CREATE TABLE commands.
+ */
 public class CreateTableHandler {
 
-    private static final String RED = "\u001B[31m";
-    private static final String RESET = "\u001B[0m";
-
-    // Danh sách kiểu dữ liệu được hỗ trợ
-    private static final List<String> SUPPORTED_TYPES = Arrays.asList(
-            "int", "varchar\\(\\d+\\)", "datetime", "text", "float", "double", "boolean"
+    private static final Set<String> SUPPORTED_TYPES = Set.of(
+            "int", "datetime", "text", "float", "double", "boolean"
     );
 
+    // FIX 1: Sửa Regex. \$$ thành \\( và \ $$ thành \\)
+    // Thêm \s* để cho phép có hoặc không có khoảng trắng
+    private static final Pattern VARCHAR_PATTERN = Pattern.compile("varchar\\(\\s*\\d+\\s*\\)", Pattern.CASE_INSENSITIVE);
+
     public static String handle(String sql, User user) throws Exception {
-        // Kiểm tra cơ sở dữ liệu hiện tại
         String currentDb = user.getCurrentDatabase();
         if (currentDb == null || currentDb.isEmpty()) {
-            throw new Exception("No database selected. Please use 'USE <database>' before creating tables.");
+            throw new Exception("No database selected. Please use 'USE <database>' first.");
         }
 
-        // Kiểm tra cú pháp cơ bản
         String sqlLower = sql.toLowerCase().trim();
         if (!sqlLower.startsWith("create table")) {
             throw new Exception("Invalid query: Must start with 'CREATE TABLE'.");
         }
         if (!sqlLower.contains("(") || !sqlLower.contains(")")) {
-            throw new Exception("Invalid CREATE TABLE syntax: Missing parentheses for column definitions.");
+            throw new Exception("Invalid syntax: Missing parentheses for column definitions.");
         }
 
-        // Regex để phân tích CREATE TABLE
+        // FIX 2: Sửa Regex. \$$ thành \\( và \ $$ thành \\)
         Pattern pattern = Pattern.compile("CREATE\\s+TABLE\\s+(\\w+)\\s*\\((.*)\\)\\s*(;)?", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
         Matcher matcher = pattern.matcher(sql);
-
         if (!matcher.find()) {
-            StringBuilder errorMsg = new StringBuilder("Invalid CREATE TABLE syntax. Please check:\n");
-            errorMsg.append("- Expected format: CREATE TABLE <table_name> (<column_definitions>);\n");
-            if (!sqlLower.contains("table")) {
-                errorMsg.append("- Missing 'TABLE' keyword after 'CREATE'.\n");
-            }
-            if (matcher.group(1) == null) {
-                errorMsg.append("- Missing table name after 'CREATE TABLE'.\n");
-            }
-            if (matcher.group(2) == null) {
-                errorMsg.append("- Missing column definitions inside parentheses.\n");
-            }
-            throw new Exception(errorMsg.toString());
+            throw new Exception("Invalid CREATE TABLE syntax. Expected: CREATE TABLE <name> (<definitions>);");
         }
 
         String tableName = matcher.group(1).trim();
         String columnsPart = matcher.group(2).trim();
 
-        // Khởi tạo cấu trúc bảng
         NsonObject nsonTable = new NsonObject();
         NsonObject meta = new NsonObject();
         NsonObject types = new NsonObject();
@@ -82,322 +61,189 @@ public class CreateTableHandler {
         NsonArray indexCols = new NsonArray();
         NsonArray primaryKeyCols = new NsonArray();
         NsonArray foreignKeys = new NsonArray();
-        HashSet<String> uniqueIndexCols = new HashSet<>();
+        Set<String> uniqueIndexCols = new HashSet<>();
 
-        // Tách các định nghĩa cột
         String[] columnLines = splitColumns(columnsPart);
         for (String columnLine : columnLines) {
             columnLine = columnLine.trim();
-            if (columnLine.isEmpty()) {
-                throw new Exception("Invalid column definition: Empty column definition found.");
-            }
+            if (columnLine.isEmpty()) continue;
 
-            // Xử lý PRIMARY KEY (composite)
+            // PRIMARY KEY
             if (columnLine.toUpperCase().startsWith("PRIMARY KEY")) {
+                // FIX 3: Sửa Regex. \$$ thành \\( và \ $$ thành \\)
                 Pattern pkPattern = Pattern.compile("PRIMARY\\s+KEY\\s*\\(\\s*([^)]+)\\s*\\)", Pattern.CASE_INSENSITIVE);
                 Matcher pkMatcher = pkPattern.matcher(columnLine);
                 if (pkMatcher.find()) {
-                    String pkColsStr = pkMatcher.group(1).trim();
-                    if (pkColsStr.isEmpty()) {
-                        throw new Exception("Invalid PRIMARY KEY syntax: No columns specified in PRIMARY KEY clause.");
-                    }
-                    String[] pkCols = pkColsStr.split("\\s*,\\s*");
+                    // FIX 4: Xóa typo "mensagens"
+                    String[] pkCols = pkMatcher.group(1).trim().split("\\s*,\\s*");
                     for (String col : pkCols) {
-                        String trimmedCol = col.trim();
-                        if (trimmedCol.isEmpty()) {
-                            throw new Exception("Invalid PRIMARY KEY syntax: Empty column name in PRIMARY KEY clause.");
-                        }
-                        if (!types.containsKey(trimmedCol)) {
-                            throw new Exception("Invalid PRIMARY KEY syntax: Column '" + trimmedCol + "' not defined in table.");
-                        }
-                        primaryKeyCols.add(trimmedCol);
-                        if (uniqueIndexCols.add(trimmedCol)) {
-                            indexCols.add(trimmedCol);
-                        }
+                        col = col.trim();
+                        if (col.isEmpty()) throw new Exception("Empty column in PRIMARY KEY.");
+                        if (!types.containsKey(col)) throw new Exception("Column '" + col + "' not defined.");
+                        primaryKeyCols.add(col);
+                        if (uniqueIndexCols.add(col)) indexCols.add(col);
                     }
-                } else {
-                    throw new Exception("Invalid PRIMARY KEY syntax: Expected format 'PRIMARY KEY (<column_list>)', got '" + columnLine + "'.");
                 }
-                continue; // Bỏ qua xử lý tiếp theo cho dòng này
+                continue;
             }
 
-            // Xử lý chỉ mục (INDEX)
-            if (columnLine.toUpperCase().startsWith("INDEX")) {
-                Pattern indexPattern = Pattern.compile("INDEX\\s*\\(\\s*(.+?)\\s*\\)", Pattern.CASE_INSENSITIVE);
-                Matcher indexMatcher = indexPattern.matcher(columnLine);
-                if (indexMatcher.find()) {
-                    String indexedColsStr = indexMatcher.group(1).trim();
-                    if (indexedColsStr.isEmpty()) {
-                        throw new Exception("Invalid INDEX syntax: No columns specified in INDEX clause.");
-                    }
-                    String[] indexedCols = indexedColsStr.split("\\s*,\\s*");
-                    for (String col : indexedCols) {
-                        String trimmedCol = col.trim();
-                        if (trimmedCol.isEmpty()) {
-                            throw new Exception("Invalid INDEX syntax: Empty column name in INDEX clause.");
-                        }
-                        if (!types.containsKey(trimmedCol)) {
-                            throw new Exception("Invalid INDEX syntax: Column '" + trimmedCol + "' not defined in table.");
-                        }
-                        if (uniqueIndexCols.add(trimmedCol)) {
-                            indexCols.add(trimmedCol);
-                        }
-                    }
-                } else {
-                    throw new Exception("Invalid INDEX syntax: Expected format 'INDEX (<column_list>)', got '" + columnLine + "'.");
-                }
-            }
-            // Xử lý khóa ngoại (FOREIGN KEY)
-            else if (columnLine.toUpperCase().startsWith("FOREIGN KEY")) {
-                Pattern fkPattern = Pattern.compile("FOREIGN\\s+KEY\\s*\\((\\w+)\\)\\s+REFERENCES\\s+(\\w+)\\s*\\((\\w+)\\)", Pattern.CASE_INSENSITIVE);
+            // FOREIGN KEY
+            if (columnLine.toUpperCase().startsWith("FOREIGN KEY")) {
+                Pattern fkPattern = Pattern.compile(
+                        "FOREIGN KEY\\s*\\(([^)]+)\\)\\s+REFERENCES\\s+(\\w+)\\s*\\(([^)]+)\\)",
+                        Pattern.CASE_INSENSITIVE
+                );
                 Matcher fkMatcher = fkPattern.matcher(columnLine);
                 if (fkMatcher.find()) {
-                    String column = fkMatcher.group(1).trim();
+                    String[] fkCols = fkMatcher.group(1).trim().split("\\s*,\\s*");
                     String refTable = fkMatcher.group(2).trim();
-                    String refColumn = fkMatcher.group(3).trim();
+                    String[] refCols = fkMatcher.group(3).trim().split("\\s*,\\s*");
 
-                    if (!types.containsKey(column)) {
-                        throw new Exception("Invalid FOREIGN KEY syntax: Column '" + column + "' not defined in table.");
+                    if (fkCols.length != refCols.length) {
+                        throw new Exception("FOREIGN KEY column count mismatch with REFERENCES.");
                     }
-                    String refTablePath = UserManager.getRootDirectory(user.getUsername()) + "/" + currentDb + "/" + refTable + ".nson";
-                    File refTableFile = new File(refTablePath);
-                    if (!refTableFile.exists()) {
-                        throw new Exception("Invalid FOREIGN KEY syntax: Referenced table '" + refTable + "' does not exist at '" + refTablePath + "'.");
-                    }
-                    if (!refTableFile.canRead()) {
-                        throw new Exception("Invalid FOREIGN KEY syntax: No read permission for referenced table '" + refTable + "' at '" + refTablePath + "'.");
-                    }
-                    // Đọc tệp tham chiếu bằng JSONObject
-                    try {
-                        String fileContent = new String(Files.readAllBytes(refTableFile.toPath()), StandardCharsets.UTF_8);
-                        NsonObject refTableData = new NsonObject(fileContent); // Sử dụng constructor của NsonObject
-                        NsonObject refTypes = refTableData.getObject("_types");
-                        if (refTypes == null) {
-                            throw new Exception("Invalid FOREIGN KEY syntax: Table '" + refTable + "' has no '_types' metadata at '" + refTablePath + "'.");
+
+                    for (String col : fkCols) {
+                        if (!types.containsKey(col.trim())) {
+                            throw new Exception("FOREIGN KEY column '" + col.trim() + "' not defined.");
                         }
-                        if (!refTypes.containsKey(refColumn)) {
-                            throw new Exception("Invalid FOREIGN KEY syntax: Referenced column '" + refColumn + "' does not exist in table '" + refTable + "'.");
-                        }
-                    } catch (IOException e) {
-                        e.printStackTrace();
-                        throw new Exception("Failed to read referenced table '" + refTable + "' at '" + refTablePath + "': " + e.getMessage());
-                    } catch (org.json.JSONException e) {
-                        e.printStackTrace();
-                        throw new Exception("Failed to parse JSON of referenced table '" + refTable + "' at '" + refTablePath + "': " + e.getMessage());
                     }
 
                     NsonObject fk = new NsonObject();
-                    fk.put("column", column);
+
+                    // THỰC TẾ: Tạo NsonArray bằng add()
+                    NsonArray fkColsArray = new NsonArray();
+                    for (String col : fkCols) fkColsArray.add(col.trim());
+
+                    NsonArray refColsArray = new NsonArray();
+                    for (String col : refCols) refColsArray.add(col.trim());
+
+                    fk.put("columns", fkColsArray);
                     fk.put("references_table", refTable);
-                    fk.put("references_column", refColumn);
+                    fk.put("references_columns", refColsArray);
                     foreignKeys.add(fk);
-                } else {
-                    throw new Exception("Invalid FOREIGN KEY syntax: Expected format 'FOREIGN KEY (<column>) REFERENCES <table>(<column>)', got '" + columnLine + "'.");
                 }
+                continue;
             }
-            // Xử lý định nghĩa cột
-            else {
-                String[] tokens = columnLine.split("\\s+");
-                if (tokens.length < 2) {
-                    throw new Exception("Invalid column definition: Missing column name or data type in '" + columnLine + "'.");
-                }
 
-                String colName = tokens[0].trim();
-                if (colName.isEmpty()) {
-                    throw new Exception("Invalid column definition: Column name cannot be empty in '" + columnLine + "'.");
-                }
-                StringBuilder colTypeBuilder = new StringBuilder(tokens[1].toLowerCase());
-                boolean isAutoIncrement = false;
+            // Regular column
+            Pattern colPattern = Pattern.compile("(\\w+)\\s+([\\w()]+)(?:\\s+(PRIMARY KEY|INDEX|UNIQUE|AUTO_INCREMENT))*", Pattern.CASE_INSENSITIVE);
+            Matcher colMatcher = colPattern.matcher(columnLine);
+            if (!colMatcher.find()) {
+                throw new Exception("Invalid column: '" + columnLine + "'");
+            }
 
-                String colTypeCheck = colTypeBuilder.toString();
-                if (!SUPPORTED_TYPES.stream().anyMatch(type -> colTypeCheck.matches(type))) {
-                    throw new Exception("Unsupported data type '" + colTypeCheck + "' for column '" + colName + "'. Supported types: int, varchar(n), datetime, text, float, double, boolean.");
-                }
+            String colName = colMatcher.group(1).trim();
+            String colType = colMatcher.group(2).trim().toLowerCase();
+            String modifiers = colMatcher.group(3);
 
-                for (int i = 2; i < tokens.length; i++) {
-                    String token = tokens[i].toUpperCase();
-                    switch (token) {
-                        case "PRIMARY":
-                            if (i + 1 < tokens.length && tokens[i + 1].equalsIgnoreCase("KEY")) {
-                                primaryKeyCols.add(colName);
-                                if (uniqueIndexCols.add(colName)) {
-                                    indexCols.add(colName);
-                                }
-                                i++;
-                            } else {
-                                throw new Exception("Invalid PRIMARY KEY syntax: Expected 'PRIMARY KEY' in '" + columnLine + "'.");
-                            }
-                            break;
-                        case "AUTOINCREMENT":
-                            isAutoIncrement = true;
-                            autoincrementCols.add(colName);
-                            if (uniqueIndexCols.add(colName)) {
-                                indexCols.add(colName);
-                            }
-                            if (!colTypeCheck.equals("int")) {
-                                throw new Exception("Invalid AUTOINCREMENT syntax: AUTOINCREMENT requires 'int' type for column '" + colName + "'.");
-                            }
-                            break;
-                        case "NOT":
-                            if (i + 1 < tokens.length && tokens[i + 1].equalsIgnoreCase("NULL")) {
-                                i++;
-                            } else {
-                                throw new Exception("Invalid NOT NULL syntax: Expected 'NOT NULL' in '" + columnLine + "'.");
-                            }
-                            break;
-                        case "DEFAULT":
-                            if (i + 1 < tokens.length) {
-                                String defaultValue = tokens[i + 1];
-                                if (defaultValue.equalsIgnoreCase("CURRENT_TIMESTAMP") && !colTypeCheck.equals("datetime")) {
-                                    throw new Exception("Invalid DEFAULT syntax: CURRENT_TIMESTAMP requires 'datetime' type for column '" + colName + "'.");
-                                }
-                                i++;
-                            } else {
-                                throw new Exception("Invalid DEFAULT syntax: Missing default value in '" + columnLine + "'.");
-                            }
-                            break;
-                        default:
-                            colTypeBuilder.append(" ").append(tokens[i]);
-                            break;
+            if (types.containsKey(colName)) {
+                throw new Exception("Duplicate column: '" + colName + "'");
+            }
+
+            if (!isSupportedType(colType)) {
+                throw new Exception("Unsupported type: '" + colType + "'");
+            }
+
+            types.put(colName, colType);
+
+            if (modifiers != null) {
+                String[] mods = modifiers.toUpperCase().split("\\s+");
+                for (String mod : mods) {
+                    switch (mod) {
+                        case "PRIMARY KEY" -> {
+                            primaryKeyCols.add(colName);
+                            if (uniqueIndexCols.add(colName)) indexCols.add(colName);
+                        }
+                        case "INDEX", "UNIQUE" -> {
+                            if (uniqueIndexCols.add(colName)) indexCols.add(colName);
+                        }
+                        case "AUTO_INCREMENT" -> autoincrementCols.add(colName);
                     }
                 }
-
-                String colType = colTypeBuilder.toString().trim();
-                if (colType.matches("varchar\\(\\d+")) {
-                    colType += ")";
-                }
-                types.put(colName, colType);
             }
         }
 
-        // Thiết lập metadata cho bảng
-        String now = Instant.now().toString();
-        meta.put("table", tableName);
-        meta.put("primary_key", primaryKeyCols);
+        meta.put("created_at", Instant.now().toString());
+        meta.put("last_modified", Instant.now().toString());
         meta.put("autoincrement", autoincrementCols);
         meta.put("index", indexCols);
+        meta.put("primary_key", primaryKeyCols);
         meta.put("foreign_keys", foreignKeys);
-        meta.put("created_at", now);
-        meta.put("last_modified", now);
 
         nsonTable.put("_meta", meta);
         nsonTable.put("_types", types);
         nsonTable.put("data", data);
 
-        // Kiểm tra thư mục cơ sở dữ liệu
-        String rootDir = UserManager.getRootDirectory(user.getUsername());
-        String dbDir = rootDir + "/" + currentDb;
+        String dbDir = UserManager.getRootDirectory(user.getUsername()) + "/" + currentDb;
         File dbFolder = new File(dbDir);
-        if (!dbFolder.exists()) {
-            throw new Exception("Database '" + currentDb + "' does not exist at path '" + dbDir + "'.");
-        }
-        if (!dbFolder.canWrite()) {
-            throw new Exception("No write permission for database directory '" + dbDir + "'. Please check folder permissions.");
+        if (!dbFolder.exists() && !dbFolder.mkdirs()) {
+            throw new Exception("Failed to create database directory: " + dbDir);
         }
 
-        // Kiểm tra dung lượng ổ đĩa
-        File disk = dbFolder.getParentFile();
-        if (disk.getUsableSpace() < 1024 * 1024) { // Kiểm tra dung lượng trống < 1MB
-            throw new Exception("Insufficient disk space on drive '" + disk.getPath() + "'. Please free up space.");
-        }
-
-        // Kiểm tra bảng đã tồn tại chưa
-        String tableFilePath = dbDir + "/" + tableName + ".nson";
-        File tableFile = new File(tableFilePath);
+        String tablePath = dbDir + "/" + tableName + ".nson";
+        File tableFile = new File(tablePath);
         if (tableFile.exists()) {
-            throw new Exception("Table '" + tableName + "' already exists in database '" + currentDb + "'.");
+            throw new Exception("Table '" + tableName + "' already exists.");
         }
 
-        // Lưu bảng vào tệp với khóa tệp
         ObjectMapper mapper = new ObjectMapper();
-        mapper.enable(SerializationFeature.INDENT_OUTPUT); // Đảm bảo định dạng JSON
-        String json;
-        try {
-            json = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(nsonTable);
-        } catch (IOException e) {
-            e.printStackTrace();
-            throw new Exception("Failed to serialize table '" + tableName + "' to JSON: " + e.getMessage());
-        }
+        mapper.enable(SerializationFeature.INDENT_OUTPUT);
+        String json = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(nsonTable);
 
-        try (FileOutputStream fos = new FileOutputStream(tableFile)) {
-            FileChannel channel = fos.getChannel();
-            FileLock lock = null;
-            try {
-                // Kiểm tra thư mục cha
-                File parentDir = tableFile.getParentFile();
-                if (!parentDir.exists()) {
-                    if (!parentDir.mkdirs()) {
-                        throw new IOException("Failed to create parent directories for '" + tableFilePath + "'.");
-                    }
-                }
-                if (!parentDir.canWrite()) {
-                    throw new IOException("No write permission for directory '" + parentDir.getPath() + "'.");
-                }
-
-                lock = channel.lock();
-                try (OutputStreamWriter fw = new OutputStreamWriter(fos, StandardCharsets.UTF_8)) {
-                    fw.write(json);
-                    fw.flush(); // Đảm bảo dữ liệu được ghi
-                }
-                // Kiểm tra file sau khi ghi
-                if (!tableFile.exists() || tableFile.length() == 0) {
-                    throw new IOException("Table file '" + tableFilePath + "' is empty or not created.");
-                }
-            } catch (IOException e) {
-                System.err.println("Error writing table '" + tableName + "' to '" + tableFilePath + "': " + e.getMessage());
-                e.printStackTrace();
-                throw new Exception("Failed to write table '" + tableName + "' to file: " + e.getMessage() + ". Check file permissions, disk space, or concurrent access.");
-            } finally {
-                if (lock != null && lock.isValid()) {
-                    try {
-                        lock.release();
-                    } catch (IOException e) {
-                        System.err.println("Warning: Failed to release file lock for table '" + tableName + "': " + e.getMessage());
-                    }
-                }
-            }
-        } catch (IOException e) {
-            System.err.println("Error accessing file for table '" + tableName + "' at '" + tableFilePath + "': " + e.getMessage());
-            e.printStackTrace();
-            throw new Exception("Failed to create or lock file for table '" + tableName + "' at '" + tableFilePath + "': " + e.getMessage());
-        }
+        writeWithLock(tableFile, json);
 
         return tableName;
     }
 
-    // Tách các định nghĩa cột, xử lý dấu phẩy trong ngoặc
+    private static boolean isSupportedType(String type) {
+        return SUPPORTED_TYPES.contains(type) || VARCHAR_PATTERN.matcher(type).matches();
+    }
+
     private static String[] splitColumns(String columnsPart) {
         List<String> columns = new ArrayList<>();
-        int parenthesesLevel = 0;
-        StringBuilder currentColumn = new StringBuilder();
-
-        for (int i = 0; i < columnsPart.length(); i++) {
-            char c = columnsPart.charAt(i);
-            if (c == '(') parenthesesLevel++;
-            else if (c == ')') parenthesesLevel--;
-            if (c == ',' && parenthesesLevel == 0) {
-                columns.add(currentColumn.toString().trim());
-                currentColumn.setLength(0);
+        int level = 0;
+        StringBuilder sb = new StringBuilder();
+        for (char c : columnsPart.toCharArray()) {
+            if (c == '(') level++;
+            else if (c == ')') level--;
+            if (c == ',' && level == 0) {
+                columns.add(sb.toString().trim());
+                sb.setLength(0);
             } else {
-                currentColumn.append(c);
+                sb.append(c);
             }
         }
-        if (currentColumn.length() > 0) {
-            columns.add(currentColumn.toString().trim());
-        }
+        if (sb.length() > 0) columns.add(sb.toString().trim());
         return columns.toArray(new String[0]);
     }
 
-    // Lấy tên bảng từ câu lệnh SQL
+    private static void writeWithLock(File file, String content) throws Exception {
+        try (FileOutputStream fos = new FileOutputStream(file);
+             FileChannel channel = fos.getChannel();
+             FileLock lock = channel.lock();
+             OutputStreamWriter writer = new OutputStreamWriter(fos, StandardCharsets.UTF_8)) {
+
+            writer.write(content);
+            writer.flush();
+        }
+    }
+
     public static String getTableName(String sql) throws Exception {
-        sql = sql.trim().replaceAll("\\s+", " ");
-        if (!sql.toLowerCase().startsWith("create table")) {
-            throw new Exception("Not a CREATE TABLE statement: Query must start with 'CREATE TABLE'.");
+        Matcher m = Pattern.compile("CREATE\\s+TABLE\\s+(\\w+)", Pattern.CASE_INSENSITIVE).matcher(sql);
+        if (!m.find()) throw new Exception("Cannot extract table name.");
+        return m.group(1).trim();
+    }
+
+    public static NsonObject handleForAPI(String sql, User user) {
+        NsonObject res = new NsonObject();
+        try {
+            String name = handle(sql, user);
+            res.put("status", "success");
+            res.put("message", "Table '" + name + "' created.");
+            return res;
+        } catch (Exception e) {
+            return res.put("error", e.getMessage());
         }
-        String[] parts = sql.split("\\s+");
-        if (parts.length < 3) {
-            throw new Exception("Invalid CREATE TABLE syntax: Missing table name after 'CREATE TABLE'.");
-        }
-        return parts[2];
     }
 }

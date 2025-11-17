@@ -3,508 +3,458 @@ package njsql.core;
 import njsql.models.User;
 import njsql.nson.NsonObject;
 import njsql.nson.NsonArray;
-import njsql.indexing.BTreeIndexManager;
-import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.util.List;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Comparator;
-import java.util.TreeMap;
-import java.util.HashMap;
 
 /**
- * Handles SQL SELECT commands, leveraging B-Tree indexes for efficient querying.
+ * Robust SELECT statement handler that tolerates arbitrary whitespace,
+ * line breaks, and optional trailing semicolons.
  */
 public class SelectHandler {
 
-    private static final String RED = "\u001B[31m";
-    private static final String RESET = "\u001B[0m";
+    private static final String YELLOW = "\u001B[33m";
+    private static final String RESET  = "\u001B[0m";
 
     /**
-     * Processes a SELECT SQL command, returning formatted results.
-     * @param sql The SQL SELECT command
-     * @param user The authenticated user
-     * @return Formatted query results as a string
-     * @throws Exception If the syntax is invalid, table doesn't exist, or query fails
+     * Executes a SELECT query and returns a formatted result table.
      */
     public static String handle(String sql, User user) throws Exception {
-        String dbName = user.getCurrentDatabase();
-        if (dbName == null || dbName.isEmpty()) {
-            throw new IllegalArgumentException("No database selected. Please use `USE <dbname>` first.");
-        }
-
-        String rootDir = UserManager.getRootDirectory(user.getUsername());
-
-        String sqlLower = sql.toLowerCase().trim();
-        if (!sqlLower.contains("from")) {
-            if (sqlLower.contains("form")) {
-                throw new IllegalArgumentException("Syntax error: Typo 'form' instead of 'FROM'. Please correct the query.");
-            }
-            throw new IllegalArgumentException("Syntax error: Missing 'FROM' keyword in SELECT query.");
-        }
-
-        // Parse query components
-        Pattern selectPattern = Pattern.compile("SELECT\\s+(.+?)\\s+FROM", Pattern.CASE_INSENSITIVE);
-        Pattern fromPattern = Pattern.compile("FROM\\s+(\\w+)(?:\\s+(\\w+))?", Pattern.CASE_INSENSITIVE);
-        Pattern joinPattern = Pattern.compile("(LEFT|RIGHT|INNER)?\\s*JOIN\\s+(\\w+)\\s+(\\w+)\\s+ON\\s+(\\w+)\\.(\\w+)\\s*=\\s*(\\w+)\\.(\\w+)", Pattern.CASE_INSENSITIVE);
-        Pattern wherePattern = Pattern.compile("WHERE\\s+(.+?)(?:\\s+(?:GROUP BY|ORDER BY)|$|;)", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
-        Pattern groupPattern = Pattern.compile("GROUP\\s+BY\\s+((?:\\w+\\.\\w+|\\w+)(?:\\s*,\\s*(?:\\w+\\.\\w+|\\w+))*)", Pattern.CASE_INSENSITIVE);
-        Pattern orderPattern = Pattern.compile("ORDER\\s+BY\\s+((?:\\w+\\.\\w+|\\w+))(?:\\s+(ASC|DESC))?", Pattern.CASE_INSENSITIVE);
-
-        Matcher selectMatcher = selectPattern.matcher(sql);
-        String columnsPart = selectMatcher.find() ? selectMatcher.group(1).trim() : "*";
-
-        Matcher fromMatcher = fromPattern.matcher(sql);
-        if (!fromMatcher.find()) {
-            throw new IllegalArgumentException("Invalid SELECT syntax: Missing table name after 'FROM'");
-        }
-        String mainTable = fromMatcher.group(1).trim();
-        String mainAlias = fromMatcher.group(2) != null ? fromMatcher.group(2).trim() : mainTable;
-
-        // Handle JOIN
-        Matcher joinMatcher = joinPattern.matcher(sql);
-        String joinType = null, joinTable = null, joinAlias = null, leftTable = null, leftColumn = null, rightTable = null, rightColumn = null;
-        if (joinMatcher.find()) {
-            joinType = joinMatcher.group(1) != null ? joinMatcher.group(1).toUpperCase() : "INNER";
-            joinTable = joinMatcher.group(2);
-            joinAlias = joinMatcher.group(3);
-            leftTable = joinMatcher.group(4);
-            leftColumn = joinMatcher.group(5);
-            rightTable = joinMatcher.group(6);
-            rightColumn = joinMatcher.group(7);
-        }
-
-        // Handle WHERE
-        Matcher whereMatcher = wherePattern.matcher(sql);
-        String whereClause = null;
-        if (whereMatcher.find()) {
-            whereClause = whereMatcher.group(1).trim();
-        }
-
-        // Handle GROUP BY and ORDER BY
-        Matcher groupMatcher = groupPattern.matcher(sql);
-        String groupByColumns = groupMatcher.find() ? groupMatcher.group(1) : null;
-
-        Matcher orderMatcher = orderPattern.matcher(sql);
-        String orderByColumn = null, orderByDirection = "ASC";
-        if (orderMatcher.find()) {
-            orderByColumn = orderMatcher.group(1);
-            orderByDirection = orderMatcher.group(2) != null ? orderMatcher.group(2).toUpperCase() : "ASC";
-        }
-
-        // Load main table data
-        String mainTablePath = rootDir + "/" + dbName + "/" + mainTable + ".nson";
-        File mainTableFile = new File(mainTablePath);
-        if (!mainTableFile.exists()) {
-            throw new IllegalArgumentException("Table '" + mainTable + "' does not exist in database '" + dbName + "'.");
-        }
-        String mainFileContent = new String(Files.readAllBytes(mainTableFile.toPath()), StandardCharsets.UTF_8);
-        NsonObject mainTableData;
         try {
-            mainTableData = NsonObject.parse(mainFileContent);
-        } catch (Exception e) {
-            throw new IllegalArgumentException("Failed to parse JSON of table '" + mainTable + "': " + e.getMessage());
-        }
-
-        NsonObject mainMeta = mainTableData.getObject("_meta");
-        if (mainMeta == null) {
-            throw new IllegalArgumentException("Invalid table structure for '" + mainTable + "': Missing '_meta'.");
-        }
-        NsonObject mainTypes = mainTableData.getObject("_types");
-        if (mainTypes == null) {
-            throw new IllegalArgumentException("Invalid table structure for '" + mainTable + "': Missing '_types'.");
-        }
-        NsonArray mainData = mainTableData.getArray("data");
-        if (mainData == null) {
-            throw new IllegalArgumentException("Invalid table structure for '" + mainTable + "': Missing 'data'.");
-        }
-
-        // Load join table data
-        NsonArray joinData = null;
-        NsonObject joinTypes = null;
-        if (joinTable != null) {
-            String joinTablePath = rootDir + "/" + dbName + "/" + joinTable + ".nson";
-            File joinTableFile = new File(joinTablePath);
-            if (!joinTableFile.exists()) {
-                throw new IllegalArgumentException("Table '" + joinTable + "' does not exist in database '" + dbName + "'.");
-            }
-            String joinFileContent = new String(Files.readAllBytes(joinTableFile.toPath()), StandardCharsets.UTF_8);
-            NsonObject joinTableData;
-            try {
-                joinTableData = NsonObject.parse(joinFileContent);
-            } catch (Exception e) {
-                throw new IllegalArgumentException("Failed to parse JSON of table '" + joinTable + "': " + e.getMessage());
+            String dbName = user.getCurrentDatabase();
+            if (dbName == null || dbName.isBlank()) {
+                throw new IllegalArgumentException("No database selected. Use `USE <dbname>` first.");
             }
 
-            NsonObject joinMeta = joinTableData.getObject("_meta");
-            if (joinMeta == null) {
-                throw new IllegalArgumentException("Invalid table structure for '" + joinTable + "': Missing '_meta'.");
-            }
-            joinTypes = joinTableData.getObject("_types");
-            if (joinTypes == null) {
-                throw new IllegalArgumentException("Invalid table structure for '" + joinTable + "': Missing '_types'.");
-            }
-            joinData = joinTableData.getArray("data");
-            if (joinData == null) {
-                throw new IllegalArgumentException("Invalid table structure for '" + joinTable + "': Missing 'data'.");
-            }
-        }
+            String rootDir = UserManager.getRootDirectory(user.getUsername());
 
-        // Parse columns
-        List<String> columnNames = new ArrayList<>();
-        Map<String, String> columnAliases = new HashMap<>();
-        boolean hasAggregate = columnsPart.contains("COUNT(") || columnsPart.contains("SUM(");
-
-        if (columnsPart.equals("*") && !hasAggregate) {
-            List<String> sortedKeys = new ArrayList<>(mainTypes.keySet());
-            for (String key : sortedKeys) {
-                columnNames.add(mainAlias + "." + key);
-                columnAliases.put(mainAlias + "." + key, key);
+            // Normalize whitespace – fixes "No match found" issues
+            String normalized = sql.replaceAll("\\s+", " ").trim();
+            if (normalized.endsWith(";")) {
+                normalized = normalized.substring(0, normalized.length() - 1).trim();
             }
-            if (joinTable != null && joinTypes != null) {
-                sortedKeys = new ArrayList<>(joinTypes.keySet());
-                for (String key : sortedKeys) {
-                    columnNames.add(joinAlias + "." + key);
-                    columnAliases.put(joinAlias + "." + key, key);
+
+            // Friendly typo detection
+            if (normalized.toLowerCase().contains(" form ")) {
+                throw new IllegalArgumentException("Syntax error: Did you mean 'FROM' instead of 'form'?");
+            }
+
+            // Parse SELECT ... FROM reliably
+            Matcher selectMatcher = Pattern.compile(
+                            "^SELECT\\s+(.*?)\\s+FROM\\s+(.*)$",
+                            Pattern.CASE_INSENSITIVE | Pattern.DOTALL)
+                    .matcher(normalized);
+
+            if (!selectMatcher.find()) {
+                throw new IllegalArgumentException("Syntax error: Invalid or missing 'FROM' clause.");
+            }
+
+            String columnsPart = selectMatcher.group(1).trim();
+            if (columnsPart.isEmpty()) columnsPart = "*";
+
+            String remainder = selectMatcher.group(2).trim();
+
+            // Table name and optional alias
+            Matcher fromMatcher = Pattern.compile("^(\\w+)\\s*(?:(\\w+)\\s*)?(.*)$", Pattern.CASE_INSENSITIVE)
+                    .matcher(remainder);
+            if (!fromMatcher.find()) {
+                throw new IllegalArgumentException("Missing table name after FROM.");
+            }
+
+            String mainTable = fromMatcher.group(1);
+            String mainAlias = fromMatcher.group(2) != null ? fromMatcher.group(2) : mainTable;
+            remainder = fromMatcher.group(3) != null ? fromMatcher.group(3).trim() : "";
+
+            // Optional JOIN
+            String joinType = null, joinTable = null, joinAlias = null;
+            String leftTable = null, leftColumn = null, rightTable = null, rightColumn = null;
+
+            Matcher joinMatcher = Pattern.compile(
+                            "^(LEFT|RIGHT|INNER)?\\s*JOIN\\s+(\\w+)\\s+(\\w+)\\s+ON\\s+([\\w.]+)\\s*=\\s+([\\w.]+)(.*)$",
+                            Pattern.CASE_INSENSITIVE | Pattern.DOTALL)
+                    .matcher(remainder);
+
+            if (joinMatcher.find()) {
+                joinType    = joinMatcher.group(1) != null ? joinMatcher.group(1).toUpperCase() : "INNER";
+                joinTable   = joinMatcher.group(2);
+                joinAlias   = joinMatcher.group(3);
+                String[] l  = joinMatcher.group(4).split("\\.");
+                String[] r  = joinMatcher.group(5).split("\\.");
+                leftTable   = l.length > 1 ? l[0] : mainTable;
+                leftColumn  = l.length > 1 ? l[1] : l[0];
+                rightTable  = r.length > 1 ? r[0] : joinTable;
+                rightColumn = r.length > 1 ? r[1] : r[0];
+                remainder   = joinMatcher.group(6) != null ? joinMatcher.group(6).trim() : "";
+            }
+
+            // WHERE / GROUP BY / ORDER BY
+            String whereClause = null, groupByColumns = null, orderByColumn = null;
+            String orderDirection = "ASC";
+
+            Matcher whereM = Pattern.compile("^WHERE\\s+(.*?)(?=\\s+GROUP\\s+BY|\\s+ORDER\\s+BY|$)", Pattern.CASE_INSENSITIVE | Pattern.DOTALL)
+                    .matcher(remainder);
+            if (whereM.find()) {
+                whereClause = whereM.group(1).trim();
+                remainder = remainder.substring(whereM.end()).trim();
+            }
+
+            Matcher groupM = Pattern.compile("^GROUP\\s+BY\\s+(.*?)(?=\\s+ORDER\\s+BY|$)", Pattern.CASE_INSENSITIVE | Pattern.DOTALL)
+                    .matcher(remainder);
+            if (groupM.find()) {
+                groupByColumns = groupM.group(1).trim();
+                remainder = remainder.substring(groupM.end()).trim();
+            }
+
+            Matcher orderM = Pattern.compile("^ORDER\\s+BY\\s+([\\w.]+)(?:\\s+(ASC|DESC))?", Pattern.CASE_INSENSITIVE)
+                    .matcher(remainder);
+            if (orderM.find()) {
+                orderByColumn = orderM.group(1).trim();
+                orderDirection = orderM.group(2) != null ? orderM.group(2).toUpperCase() : "ASC";
+            }
+
+            // Load main table
+            File mainFile = new File(rootDir + "/" + dbName + "/" + mainTable + ".nson");
+            if (!mainFile.exists()) {
+                throw new IllegalArgumentException("Table '" + mainTable + "' does not exist in database '" + dbName + "'.");
+            }
+
+            NsonObject mainTableObj = NsonObject.parse(Files.readString(mainFile.toPath(), StandardCharsets.UTF_8));
+            NsonObject mainTypes    = mainTableObj.getObject("_types");
+            NsonArray  mainRows     = mainTableObj.getArray("data");
+
+            // Load join table (if any)
+            NsonObject joinTypes = null;
+            NsonArray  joinRows  = null;
+            if (joinTable != null) {
+                File joinFile = new File(rootDir + "/" + dbName + "/" + joinTable + ".nson");
+                if (!joinFile.exists()) {
+                    throw new IllegalArgumentException("Join table '" + joinTable + "' does not exist.");
                 }
-            }
-        } else {
-            String[] columnDefs = columnsPart.split("\\s*,\\s*");
-            for (String colDef : columnDefs) {
-                Pattern aliasPattern = Pattern.compile("(?:COUNT\\(\\*\\)|(?:COUNT|SUM)\\s*\\(\\s*(\\w+\\.\\w+|\\w+)\\s*\\)|(\\w+\\.\\w+|\\w+))\\s*(?:AS\\s+(\\w+))?", Pattern.CASE_INSENSITIVE);
-                Matcher aliasMatcher = aliasPattern.matcher(colDef.trim());
-                if (aliasMatcher.find()) {
-                    String aggFunc = aliasMatcher.group(0).toUpperCase();
-                    String colName = aliasMatcher.group(1) != null ? aliasMatcher.group(1) : aliasMatcher.group(2);
-                    String alias = aliasMatcher.group(3);
-                    if (colName != null && !colName.contains(".")) {
-                        colName = mainAlias + "." + colName;
-                    }
-                    String key = colName != null ? colName : aggFunc;
-                    columnNames.add(key);
-                    columnAliases.put(key, alias != null ? alias : (colName != null ? colName.split("\\.")[1] : aggFunc));
-                } else {
-                    throw new IllegalArgumentException("Invalid column definition: '" + colDef + "'. Expected format: <alias>.<column> [AS <alias>], COUNT(*), COUNT(<table>.<column>), or SUM(<table>.<column>) [AS <alias>].");
-                }
-            }
-        }
-
-        List<String> groupByColumnList = new ArrayList<>();
-        if (groupByColumns != null) {
-            String[] groupCols = groupByColumns.split("\\s*,\\s*");
-            for (String col : groupCols) {
-                if (!col.contains(".")) {
-                    col = mainAlias + "." + col;
-                }
-                groupByColumnList.add(col);
-            }
-        }
-
-        final String effectiveOrderByColumn = (orderByColumn != null && !orderByColumn.contains(".")) ? mainAlias + "." + orderByColumn : orderByColumn;
-
-        // Process data with index optimization
-        List<NsonObject> resultData = new ArrayList<>();
-        if (joinData != null) {
-            if (joinType.equals("LEFT")) {
-                for (int i = 0; i < mainData.size(); i++) {
-                    NsonObject mainRow = mainData.getObject(i);
-                    boolean matched = false;
-                    for (int j = 0; j < joinData.size(); j++) {
-                        NsonObject joinRow = joinData.getObject(j);
-                        Object leftValue = leftTable.equals(mainAlias) ? mainRow.get(leftColumn) : joinRow.get(leftColumn);
-                        Object rightValue = rightTable.equals(mainAlias) ? mainRow.get(rightColumn) : joinRow.get(rightColumn);
-                        if (leftValue != null && leftValue.equals(rightValue)) {
-                            NsonObject mergedRow = mergeRows(mainRow, joinRow, mainAlias, joinAlias, mainTypes, joinTypes);
-                            resultData.add(mergedRow);
-                            matched = true;
-                        }
-                    }
-                    if (!matched) {
-                        NsonObject mergedRow = mergeRows(mainRow, null, mainAlias, joinAlias, mainTypes, joinTypes);
-                        resultData.add(mergedRow);
-                    }
-                }
-            } else if (joinType.equals("RIGHT")) {
-                for (int j = 0; j < joinData.size(); j++) {
-                    NsonObject joinRow = joinData.getObject(j);
-                    boolean matched = false;
-                    for (int i = 0; i < mainData.size(); i++) {
-                        NsonObject mainRow = mainData.getObject(i);
-                        Object leftValue = leftTable.equals(mainAlias) ? mainRow.get(leftColumn) : joinRow.get(leftColumn);
-                        Object rightValue = rightTable.equals(mainAlias) ? mainRow.get(rightColumn) : joinRow.get(rightColumn);
-                        if (leftValue != null && leftValue.equals(rightValue)) {
-                            NsonObject mergedRow = mergeRows(mainRow, joinRow, mainAlias, joinAlias, mainTypes, joinTypes);
-                            resultData.add(mergedRow);
-                            matched = true;
-                        }
-                    }
-                    if (!matched) {
-                        NsonObject mergedRow = mergeRows(null, joinRow, mainAlias, joinAlias, mainTypes, joinTypes);
-                        resultData.add(mergedRow);
-                    }
-                }
-            } else { // INNER JOIN
-                for (int i = 0; i < mainData.size(); i++) {
-                    NsonObject mainRow = mainData.getObject(i);
-                    for (int j = 0; j < joinData.size(); j++) {
-                        NsonObject joinRow = joinData.getObject(j);
-                        Object leftValue = leftTable.equals(mainAlias) ? mainRow.get(leftColumn) : joinRow.get(leftColumn);
-                        Object rightValue = rightTable.equals(mainAlias) ? mainRow.get(rightColumn) : joinRow.get(rightColumn);
-                        if (leftValue != null && leftValue.equals(rightValue)) {
-                            NsonObject mergedRow = mergeRows(mainRow, joinRow, mainAlias, joinAlias, mainTypes, joinTypes);
-                            resultData.add(mergedRow);
-                        }
-                    }
-                }
-            }
-        } else {
-            // Use index for simple equality WHERE clause
-            if (whereClause != null) {
-                Pattern simplePattern = Pattern.compile("(\\w+)\\s*=\\s*('[^']*'|[0-9]+)");
-                Matcher simpleMatcher = simplePattern.matcher(whereClause.trim());
-                if (simpleMatcher.matches()) {
-                    String column = simpleMatcher.group(1);
-                    String valueStr = simpleMatcher.group(2).replaceAll("^'|'$", "");
-
-                    if (mainTypes.containsKey(column)) {
-                        ObjectMapper mapper = new ObjectMapper();
-                        Map<String, Object> tableJson = mapper.readValue(mainFileContent, Map.class);
-                        Map<String, Object> indexes = (Map<String, Object>) tableJson.get("_indexes");
-                        String indexName = null;
-                        if (indexes != null) {
-                            for (Map.Entry<String, Object> entry : indexes.entrySet()) {
-                                Map<String, Object> index = (Map<String, Object>) entry.getValue();
-                                if (column.equals(index.get("column"))) {
-                                    indexName = entry.getKey();
-                                    break;
-                                }
-                            }
-                        }
-
-                        if (indexName != null) {
-                            Map<String, Object> index = (Map<String, Object>) indexes.get(indexName);
-                            TreeMap<String, List<Integer>> indexMap = (TreeMap<String, List<Integer>>) index.get("map");
-                            String key = mainTypes.getString(column).equalsIgnoreCase("int") ? valueStr : valueStr;
-                            List<Integer> positions = indexMap.get(key);
-                            if (positions != null) {
-                                for (int pos : positions) {
-                                    NsonObject row = mainData.getObject(pos);
-                                    NsonObject wrapped = new NsonObject();
-                                    for (String key2 : mainTypes.keySet()) {
-                                        wrapped.put(mainAlias + "." + key2, row.get(key2));
-                                    }
-                                    resultData.add(wrapped);
-                                }
-                            }
-                            // Skip regular evaluation if index is used
-                            whereClause = null;
-                        }
-                    }
-                }
+                NsonObject joinTableObj = NsonObject.parse(Files.readString(joinFile.toPath(), StandardCharsets.UTF_8));
+                joinTypes = joinTableObj.getObject("_types");
+                joinRows  = joinTableObj.getArray("data");
             }
 
-            // Fallback to full scan if no index or complex WHERE
-            if (whereClause != null || resultData.isEmpty()) {
-                resultData.clear();
-                for (int i = 0; i < mainData.size(); i++) {
-                    NsonObject row = mainData.getObject(i);
-                    NsonObject wrapped = new NsonObject();
-                    for (String key : mainTypes.keySet()) {
-                        wrapped.put(mainAlias + "." + key, row.get(key));
-                    }
-                    resultData.add(wrapped);
-                }
-            }
-        }
+            // Perform JOIN
+            NsonArray joined = new NsonArray();
 
-        // Filter data
-        List<NsonObject> filteredData = new ArrayList<>();
-        for (NsonObject row : resultData) {
-            if (whereClause == null || evaluateWhere(row, whereClause, mainTypes, joinTypes, mainAlias, joinAlias)) {
-                filteredData.add(row);
-            }
-        }
-
-        // Handle GROUP BY
-        List<NsonObject> groupedData = filteredData;
-        if (!groupByColumnList.isEmpty()) {
-            Map<String, List<NsonObject>> groups = new HashMap<>();
-            for (NsonObject row : filteredData) {
-                StringBuilder keyBuilder = new StringBuilder();
-                for (String col : groupByColumnList) {
-                    keyBuilder.append(row.get(col) != null ? row.get(col).toString() : "NULL").append("|");
+            if (joinTable != null) {
+                final String finalRightColumn = rightColumn;
+                Map<Object, List<NsonObject>> rightIndex = new HashMap<>();
+                for (int i = 0; i < joinRows.size(); i++) {
+                    NsonObject r = joinRows.getObject(i);
+                    Object key = r.get(finalRightColumn);
+                    rightIndex.computeIfAbsent(key, k -> new ArrayList<>()).add(r);
                 }
-                String key = keyBuilder.toString();
-                groups.computeIfAbsent(key, k -> new ArrayList<>()).add(row);
-            }
-            groupedData = new ArrayList<>();
-            for (List<NsonObject> group : groups.values()) {
-                NsonObject aggRow = new NsonObject();
-                for (String col : columnNames) {
-                    if (col.equals("COUNT(*)")) {
-                        aggRow.put(columnAliases.get(col), group.size());
-                    } else if (col.startsWith("SUM(")) {
-                        String colName = col.substring(4, col.length() - 1);
-                        double sum = group.stream()
-                                .mapToDouble(r -> {
-                                    Object val = r.get(colName);
-                                    return val != null ? Double.parseDouble(val.toString()) : 0.0;
-                                })
-                                .sum();
-                        aggRow.put(columnAliases.get(col), sum);
+
+                final String finalLeftColumn = leftColumn;
+                for (int i = 0; i < mainRows.size(); i++) {
+                    NsonObject mainRow = mainRows.getObject(i);
+                    Object key = mainRow.get(finalLeftColumn);
+                    List<NsonObject> matches = rightIndex.getOrDefault(key, Collections.emptyList());
+
+                    if (matches.isEmpty() && "LEFT".equals(joinType)) {
+                        joined.add(mergeRows(mainRow, null, mainTable, joinTable, mainTypes, joinTypes));
                     } else {
-                        aggRow.put(col, group.get(0).get(col));
+                        for (NsonObject jr : matches) {
+                            joined.add(mergeRows(mainRow, jr, mainTable, joinTable, mainTypes, joinTypes));
+                        }
                     }
                 }
-                groupedData.add(aggRow);
-            }
-        }
-
-        // Handle ORDER BY
-        if (effectiveOrderByColumn != null) {
-            final String sortDirection = orderByDirection;
-            Comparator<NsonObject> comparator = (r1, r2) -> {
-                Object v1 = r1.get(effectiveOrderByColumn);
-                Object v2 = r2.get(effectiveOrderByColumn);
-                if (v1 == null) return v2 == null ? 0 : -1;
-                if (v2 == null) return 1;
-                try {
-                    double d1 = Double.parseDouble(v1.toString());
-                    double d2 = Double.parseDouble(v2.toString());
-                    return sortDirection.equals("ASC") ? Double.compare(d1, d2) : Double.compare(d2, d1);
-                } catch (NumberFormatException e) {
-                    return sortDirection.equals("ASC") ? v1.toString().compareTo(v2.toString()) : v2.toString().compareTo(v1.toString());
+            } else {
+                // No JOIN – prefix columns with table name
+                for (int i = 0; i < mainRows.size(); i++) {
+                    NsonObject src = mainRows.getObject(i);
+                    NsonObject dst = new NsonObject();
+                    for (String c : mainTypes.keySet()) {
+                        dst.put(mainTable + "." + c, src.get(c));
+                    }
+                    joined.add(dst);
                 }
-            };
-            groupedData.sort(comparator);
-        }
-
-        // Format output
-        StringBuilder result = new StringBuilder();
-        result.append("+");
-        for (String col : columnNames) {
-            result.append("-".repeat(20)).append("+");
-        }
-        result.append("\n|");
-        for (String col : columnNames) {
-            String alias = columnAliases.get(col);
-            result.append(String.format(" %-18s |", alias));
-        }
-        result.append("\n+");
-        for (String col : columnNames) {
-            result.append("-".repeat(20)).append("+");
-        }
-        result.append("\n");
-
-        for (NsonObject row : groupedData) {
-            result.append("|");
-            for (String col : columnNames) {
-                Object val = row.get(col);
-                String valStr = (val == null) ? "NULL" : val.toString();
-                result.append(String.format(" %-18s |", valStr.length() > 18 ? valStr.substring(0, 15) + "..." : valStr));
             }
-            result.append("\n");
-        }
 
-        if (groupedData.isEmpty()) {
-            result.append("No data found in table.\n");
-        } else {
-            result.append("+");
-            for (int i = 0; i < columnNames.size(); i++) {
-                result.append("-".repeat(20)).append("+");
+            // Apply WHERE
+            final String finalWhereClause = whereClause;
+            NsonArray filtered = new NsonArray();
+            for (int i = 0; i < joined.size(); i++) {
+                NsonObject row = joined.getObject(i);
+                if (finalWhereClause == null || evaluateWhere(row, finalWhereClause, mainTypes, joinTypes, mainTable, joinTable)) {
+                    filtered.add(row);
+                }
             }
-            result.append("\n");
-        }
 
-        return result.toString();
-    }
+            // Resolve selected columns and aliases
+            List<String> selectedColumns = new ArrayList<>();
+            Map<String, String> aliases = new HashMap<>();
 
-    /**
-     * Merges rows from main and join tables for JOIN operations.
-     */
-    private static NsonObject mergeRows(NsonObject mainRow, NsonObject joinRow, String mainTable, String joinTable, NsonObject mainTypes, NsonObject joinTypes) {
-        NsonObject mergedRow = new NsonObject();
-        if (mainRow != null) {
-            for (String key : mainTypes.keySet()) {
-                mergedRow.put(mainTable + "." + key, mainRow.get(key));
+            if ("*".equals(columnsPart)) {
+                Set<String> all = new LinkedHashSet<>(mainTypes.keySet());
+                if (joinTypes != null) all.addAll(joinTypes.keySet());
+                for (String c : all) {
+                    String full = mainTypes.containsKey(c) ? mainTable + "." + c : joinTable + "." + c;
+                    selectedColumns.add(full);
+                    aliases.put(full, c);
+                }
+            } else {
+                for (String part : columnsPart.split("\\s*,\\s*")) {
+                    String[] p = part.split("\\s+AS\\s+", 2);
+                    String col   = p[0].trim();
+                    String alias = p.length > 1 ? p[1].trim() : col;
+                    selectedColumns.add(col);
+                    aliases.put(col, alias);
+                }
             }
-        }
-        if (joinRow != null && joinTypes != null) {
-            for (String key : joinTypes.keySet()) {
-                mergedRow.put(joinTable + "." + key, joinRow.get(key));
+
+            // Projection
+            NsonArray projected = new NsonArray();
+            for (int i = 0; i < filtered.size(); i++) {
+                NsonObject src = filtered.getObject(i);
+                NsonObject dst = new NsonObject();
+                for (String col : selectedColumns) {
+                    Object value = src.get(col);
+                    String alias = aliases.getOrDefault(col,
+                            col.contains(".") ? col.substring(col.lastIndexOf('.') + 1) : col);
+                    dst.put(alias, value);
+                }
+                projected.add(dst);
             }
-        }
-        return mergedRow;
-    }
 
-    /**
-     * Evaluates the WHERE clause for a row, used for non-indexed or complex conditions.
-     */
-    private static boolean evaluateWhere(NsonObject row, String whereClause, NsonObject mainTypes, NsonObject joinTypes, String mainTable, String joinTable) throws Exception {
-        Pattern wherePattern = Pattern.compile(
-                "([\\w.]+)\\s*([=><!]=?|<>|LIKE)\\s*('[^']*'|\\d+(\\.\\d+)?)",
-                Pattern.CASE_INSENSITIVE
-        );
+            // GROUP BY
+            NsonArray resultSet = projected;
+            final String finalOrderByColumn = orderByColumn != null ? orderByColumn : (groupByColumns != null ? groupByColumns.split("\\s*,\\s*")[0] : null);
 
-        Matcher matcher = wherePattern.matcher(whereClause.trim());
+            if (groupByColumns != null) {
+                List<String> groupCols = Arrays.asList(groupByColumns.split("\\s*,\\s*"));
+                Map<String, List<NsonObject>> groups = new HashMap<>();
 
-        if (!matcher.find()) {
-            throw new IllegalArgumentException("Unsupported WHERE clause: '" + whereClause +
-                    "'. Expected format: column [=|>|<|>=|<=|!=|<>|LIKE] 'value'|number");
-        }
+                for (int i = 0; i < projected.size(); i++) {
+                    NsonObject row = projected.getObject(i);
+                    StringBuilder key = new StringBuilder();
+                    for (String gc : groupCols) {
+                        Object v = row.get(gc);
+                        key.append(v == null ? "NULL" : v).append("|");
+                    }
+                    groups.computeIfAbsent(key.toString(), k -> new ArrayList<>()).add(row);
+                }
 
-        String column = matcher.group(1).trim();
-        String operator = matcher.group(2).trim().toUpperCase();
-        String value = matcher.group(3).replaceAll("^'|'$", "");
+                resultSet = new NsonArray();
+                for (List<NsonObject> g : groups.values()) {
+                    NsonObject agg = new NsonObject();
+                    for (String col : selectedColumns) {
+                        String alias = aliases.getOrDefault(col,
+                                col.contains(".") ? col.substring(col.lastIndexOf('.') + 1) : col);
 
-        String[] parts = column.split("\\.");
-        String tableName = parts.length > 1 ? parts[0] : mainTable;
-        String colName = parts.length > 1 ? parts[1] : parts[0];
+                        if (col.toUpperCase().startsWith("COUNT(") ||
+                                col.toUpperCase().startsWith("SUM(") ||
+                                col.toUpperCase().startsWith("AVG(")) {
 
-        NsonObject types = tableName.equals(mainTable) ? mainTypes : joinTypes;
-        if (types == null || !types.containsKey(colName)) {
-            throw new IllegalArgumentException("Column '" + colName + "' does not exist in table '" + tableName + "'");
-        }
+                            String inner = col.substring(col.indexOf('(') + 1, col.indexOf(')')).trim();
+                            final String finalInner = inner;
+                            double sum = g.stream()
+                                    .mapToDouble(r -> {
+                                        Object v = r.get(finalInner);
+                                        return v == null ? 0.0 : Double.parseDouble(v.toString());
+                                    })
+                                    .sum();
 
-        String fullColName = parts.length > 1 ? column : tableName + "." + colName;
-        Object rowValue = row.get(fullColName);
-        if (rowValue == null) return false;
+                            if (col.toUpperCase().startsWith("COUNT(")) {
+                                agg.put(alias, g.size());
+                            } else if (col.toUpperCase().startsWith("SUM(")) {
+                                agg.put(alias, sum);
+                            } else {
+                                agg.put(alias, g.isEmpty() ? 0.0 : sum / g.size());
+                            }
+                        } else {
+                            agg.put(alias, g.get(0).get(alias));
+                        }
+                    }
+                    resultSet.add(agg);
+                }
+            }
 
-        String type = types.getString(colName);
+            // ORDER BY
+            if (finalOrderByColumn != null) {
+                final String direction = orderDirection;
+                Comparator<NsonObject> comp = (a, b) -> {
+                    Object va = a.get(finalOrderByColumn);
+                    Object vb = b.get(finalOrderByColumn);
 
-        if (type.equals("int") || type.equals("float") || type.equals("double")) {
-            try {
-                double rowNum = Double.parseDouble(rowValue.toString());
-                double valNum = Double.parseDouble(value);
-                return switch (operator) {
-                    case "=" -> rowNum == valNum;
-                    case ">" -> rowNum > valNum;
-                    case "<" -> rowNum < valNum;
-                    case ">=" -> rowNum >= valNum;
-                    case "<=" -> rowNum <= valNum;
-                    case "!=", "<>" -> rowNum != valNum;
-                    default -> false;
+                    if (va == null && vb == null) return 0;
+                    if (va == null) return "ASC".equals(direction) ? -1 : 1;
+                    if (vb == null) return "ASC".equals(direction) ? 1 : -1;
+
+                    try {
+                        double da = Double.parseDouble(va.toString());
+                        double db = Double.parseDouble(vb.toString());
+                        return "ASC".equals(direction) ? Double.compare(da, db) : Double.compare(db, da);
+                    } catch (NumberFormatException e) {
+                        String sa = va.toString();
+                        String sb = vb.toString();
+                        return "ASC".equals(direction) ? sa.compareTo(sb) : sb.compareTo(sa);
+                    }
                 };
-            } catch (NumberFormatException e) {
-                throw new IllegalArgumentException("Invalid number format in WHERE clause for column '" + column + "'");
+
+                List<NsonObject> sorted = new ArrayList<>();
+                for (int i = 0; i < resultSet.size(); i++) sorted.add(resultSet.getObject(i));
+                sorted.sort(comp);
+
+                resultSet = new NsonArray();
+                resultSet.addAll(sorted);
             }
-        } else if (operator.equals("LIKE")) {
-            String regex = "^" + value.replace("%", ".*").replace("_", ".") + "$";
-            return rowValue.toString().matches(regex);
-        } else {
-            boolean equals = rowValue.toString().equals(value);
-            return switch (operator) {
-                case "=" -> equals;
-                case "!=", "<>" -> !equals;
-                default -> false;
+
+            // Render table
+            StringBuilder output = new StringBuilder();
+            if (selectedColumns.isEmpty()) {
+                output.append("No columns selected.\n");
+                return output.toString();
+            }
+
+            int width = 20;
+            output.append("+");
+            for (int i = 0; i < selectedColumns.size(); i++) output.append("-".repeat(width)).append("+");
+            output.append("\n|");
+
+            for (String col : selectedColumns) {
+                String alias = aliases.getOrDefault(col,
+                        col.contains(".") ? col.substring(col.lastIndexOf('.') + 1) : col);
+                String display = alias.length() > 18 ? alias.substring(0, 15) + "..." : alias;
+                output.append(String.format(" %-18s |", display));
+            }
+            output.append("\n+");
+            for (int i = 0; i < selectedColumns.size(); i++) output.append("-".repeat(width)).append("+");
+            output.append("\n");
+
+            for (int i = 0; i < resultSet.size(); i++) {
+                NsonObject row = resultSet.getObject(i);
+                output.append("|");
+                for (String col : selectedColumns) {
+                    String alias = aliases.getOrDefault(col,
+                            col.contains(".") ? col.substring(col.lastIndexOf('.') + 1) : col);
+                    Object v = row.get(alias);
+                    String s = v == null ? "NULL" : v.toString();
+                    String display = s.length() > 18 ? s.substring(0, 15) + "..." : s;
+                    output.append(String.format(" %-18s |", display));
+                }
+                output.append("\n");
+            }
+
+            output.append("+");
+            for (int i = 0; i < selectedColumns.size(); i++) output.append("-".repeat(width)).append("+");
+            output.append("\n");
+
+            if (resultSet.isEmpty()) {
+                output.append("No data found.\n");
+            } else {
+                output.append(resultSet.size()).append(" row(s) returned.\n");
+            }
+
+            return output.toString();
+
+        } catch (Exception e) {
+            System.err.println(YELLOW + ">> DEBUG: Exception in SelectHandler.handle()" + RESET);
+            System.err.println(YELLOW + ">> SQL: " + sql + RESET);
+            e.printStackTrace();
+            throw e;
+        }
+    }
+
+    /** Merges main and join rows, prefixing columns with table names. */
+    private static NsonObject mergeRows(NsonObject mainRow, NsonObject joinRow,
+                                        String mainTable, String joinTable,
+                                        NsonObject mainTypes, NsonObject joinTypes) {
+        NsonObject merged = new NsonObject();
+        mainTypes.keySet().forEach(k -> merged.put(mainTable + "." + k, mainRow.get(k)));
+        if (joinRow != null && joinTypes != null) {
+            joinTypes.keySet().forEach(k -> merged.put(joinTable + "." + k, joinRow.get(k)));
+        }
+        return merged;
+    }
+
+    /** Evaluates simple WHERE conditions. */
+    private static boolean evaluateWhere(NsonObject row, String clause,
+                                         NsonObject mainTypes, NsonObject joinTypes,
+                                         String mainTable, String joinTable) throws Exception {
+        if (clause == null || clause.isBlank()) return true;
+
+        Matcher m = Pattern.compile("([\\w.]+)\\s*(=|!=|<>|<|>|<=|>=|LIKE)\\s*('[^']*'|\\d+(?:\\.\\d+)?)", Pattern.CASE_INSENSITIVE)
+                .matcher(clause.trim());
+
+        if (!m.find()) {
+            throw new IllegalArgumentException("Unsupported WHERE clause format: " + clause);
+        }
+
+        String col = m.group(1).trim();
+        String op  = m.group(2).toUpperCase().replace("<>", "!=");
+        String val = m.group(3).replaceAll("^'|'$", "");
+
+        String[] parts = col.split("\\.");
+        String tbl   = parts.length > 1 ? parts[0] : mainTable;
+        String field = parts.length > 1 ? parts[1] : parts[0];
+
+        NsonObject types = tbl.equals(mainTable) ? mainTypes : joinTypes;
+        if (types == null || !types.containsKey(field)) {
+            throw new IllegalArgumentException("Column not found: " + col);
+        }
+
+        Object rowVal = row.get(tbl + "." + field);
+        if (rowVal == null) return false;
+
+        String type = types.getString(field);
+        if (type.matches("int|float|double")) {
+            double a = Double.parseDouble(rowVal.toString());
+            double b = Double.parseDouble(val);
+            return switch (op) {
+                case "="  -> a == b;
+                case "!=" -> a != b;
+                case ">"  -> a > b;
+                case "<"  -> a < b;
+                case ">=" -> a >= b;
+                case "<=" -> a <= b;
+                default   -> false;
             };
         }
+
+        if ("LIKE".equals(op)) {
+            String regex = "^" + val.replace("%", ".*").replace("_", ".") + "$";
+            return rowVal.toString().matches(regex);
+        }
+
+        boolean eq = rowVal.toString().equals(val);
+        return "=".equals(op) ? eq : !eq;
+    }
+
+    /** API version – returns structured JSON. */
+    public static NsonObject handleForAPI(String sql, User user) {
+        NsonObject response = new NsonObject();
+        try {
+            String formatted = handle(sql, user);
+            NsonArray data = new NsonArray();
+
+            String[] lines = formatted.split("\n");
+            boolean inData = false;
+            for (String line : lines) {
+                if (line.startsWith("|") && line.contains(" | ")) inData = true;
+                else if (inData && line.startsWith("+")) break;
+                else if (inData && line.startsWith("|")) {
+                    String[] cells = line.split("\\|");
+                    NsonObject row = new NsonObject();
+                    for (int i = 1; i < cells.length - 1; i++) {
+                        String v = cells[i].trim();
+                        row.put("col" + i, "NULL".equals(v) ? null : v);
+                    }
+                    data.add(row);
+                }
+            }
+            response.put("data", data);
+            response.put("success", true);
+        } catch (Exception e) {
+            response.put("error", e.getMessage());
+            response.put("success", false);
+        }
+        return response;
     }
 }

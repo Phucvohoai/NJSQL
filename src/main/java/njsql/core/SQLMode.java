@@ -11,6 +11,7 @@ import java.util.Scanner;
 import java.io.File;
 import java.util.Map;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.core.type.TypeReference; // FIX: Thêm import
 import java.util.Arrays;
 
 public class SQLMode {
@@ -103,7 +104,7 @@ public class SQLMode {
                     continue;
                 }
 
-                String[] statements = fullSQL.split(";");
+                List<String> statements = splitSQLStatements(fullSQL);
 
                 for (String sql : statements) {
                     sql = sql.trim();
@@ -321,7 +322,8 @@ public class SQLMode {
                                 String dbPath = UserManager.getRootDirectory(user.getUsername()) + "/" + user.getCurrentDatabase();
                                 File file = new File(dbPath + "/" + tableName + ".nson");
                                 ObjectMapper mapper = new ObjectMapper();
-                                Map<String, Object> tableJson = mapper.readValue(file, Map.class);
+                                // FIX 2 (WARNING): Sửa lỗi `unchecked conversion`
+                                Map<String, Object> tableJson = mapper.readValue(file, new TypeReference<Map<String, Object>>() {});
                                 Map<String, Object> indexes = (Map<String, Object>) tableJson.get("_indexes");
                                 if (indexes != null && indexes.containsKey(indexName)) {
                                     indexes.remove(indexName);

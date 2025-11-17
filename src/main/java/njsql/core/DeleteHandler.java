@@ -19,7 +19,6 @@ import java.util.ArrayList;
 import java.time.Instant;
 import java.io.IOException;
 
-
 public class DeleteHandler {
 
     public static String handle(String sql, User user) throws Exception {
@@ -37,8 +36,6 @@ public class DeleteHandler {
         String table = matcher.group(1);
         String whereClause = matcher.group(2);
 
-//        System.out.println("DEBUG: Parsed WHERE clause: " + whereClause);
-
         String db = user.getCurrentDatabase();
         if (db == null) {
             throw new IllegalArgumentException("No database selected. Please use `USE <dbname>` first.");
@@ -51,7 +48,6 @@ public class DeleteHandler {
         }
 
         String fileContent = new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
-//        System.out.println("DEBUG: File content of " + table + ".nson: " + fileContent);
         NsonObject tableData;
         try {
             tableData = NsonObject.parse(fileContent);
@@ -107,13 +103,12 @@ public class DeleteHandler {
             // Xóa tệp cũ với xử lý lỗi
             try {
                 Files.deleteIfExists(file.toPath());
-//                System.out.println("DEBUG: Deleted old file: " + file.getPath());
             } catch (Exception e) {
                 System.err.println("ERROR: Failed to delete old file '" + file.getPath() + "': " + e.getClass().getName() + " - " + (e.getMessage() != null ? e.getMessage() : "Unknown error"));
                 throw new Exception("Failed to delete old file '" + table + "': " + (e.getMessage() != null ? e.getMessage() : "Unknown error"));
             }
 
-// Ghi tệp mới
+            // Ghi tệp mới
             try (FileOutputStream fos = new FileOutputStream(file)) {
                 // Lấy kênh và khóa tệp sau khi mở luồng
                 FileChannel channel = fos.getChannel();
@@ -126,182 +121,211 @@ public class DeleteHandler {
                         throw new IOException("Cannot obtain lock on file");
                     }
 
-                    // Ghi dữ liệu bằng OutputStreamWriter
+                    // Ghi dữ liệu
                     try (OutputStreamWriter fw = new OutputStreamWriter(fos, StandardCharsets.UTF_8)) {
-                        if (tableData == null) {
-                            throw new IllegalStateException("tableData is null before writing to file");
-                        }
-//                        System.out.println("DEBUG: Writing tableData to file: " + tableData);
-                        String json = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(tableData);
-                        fw.write(json);
-                        fw.flush(); // Đảm bảo dữ liệu được ghi ra đĩa
+                        fw.write(tableData.toString(2));
+                    }
+                } finally {
+                    if (lock != null) {
+                        lock.release();
+                    }
+                }
+            }
+        } catch (Exception e) {
+            throw new Exception("Failed to write updated table '" + table + "': " + e.getMessage());
+        }
+
+        return "Deleted " + deletedRows.size() + " row(s) from '" + table + "'";
+    }
+
+    public static NsonObject handleForAPI(String sql, User user) {
+        NsonObject response = new NsonObject();
+        try {
+            sql = sql.replace(";", "").trim();
+            Pattern pattern = Pattern.compile(
+                    "(?i)DELETE FROM (\\w+)(?: WHERE (.+))?$",
+                    Pattern.CASE_INSENSITIVE | Pattern.DOTALL
+            );
+            Matcher matcher = pattern.matcher(sql);
+
+            if (!matcher.find()) {
+                return response.put("error", "Invalid DELETE syntax. Expected format: DELETE FROM <table> [WHERE <condition>];");
+            }
+
+            String table = matcher.group(1);
+            String whereClause = matcher.group(2);
+
+            String db = user.getCurrentDatabase();
+            if (db == null) {
+                return response.put("error", "No database selected. Please use `USE <dbname>` first.");
+            }
+
+            String rootDir = UserManager.getRootDirectory(user.getUsername());
+            File file = new File(rootDir + "/" + db + "/" + table + ".nson");
+            if (!file.exists()) {
+                return response.put("error", "Table '" + table + "' not found in database '" + db + "'.");
+            }
+
+            String fileContent = new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
+            NsonObject tableData = NsonObject.parse(fileContent);
+
+            NsonObject meta = tableData.getObject("_meta");
+            NsonObject types = tableData.getObject("_types");
+            NsonArray data = tableData.getArray("data");
+            if (meta == null || types == null || data == null) {
+                return response.put("error", "Invalid table structure for '" + table + "'. Missing '_meta', '_types', or 'data'.");
+            }
+            NsonArray indexCols = meta.getArray("index");
+            if (indexCols == null) {
+                indexCols = new NsonArray();
+            }
+
+            IndexManager indexManager = new IndexManager();
+            indexManager.loadIndexes(file.getPath(), data, indexCols);
+
+            NsonArray newData = new NsonArray();
+            List<Integer> deletedRows = new ArrayList<>();
+            for (int i = 0; i < data.size(); i++) {
+                NsonObject row = data.getObject(i);
+                if (whereClause == null || evaluateWhere(row, whereClause, types)) {
+                    deletedRows.add(i);
+                } else {
+                    newData.add(row);
+                }
+            }
+
+            for (int i : deletedRows) {
+                NsonObject row = data.getObject(i);
+                for (Object indexColObj : indexCols) {
+                    String indexCol = indexColObj.toString();
+                    Object value = row.get(indexCol);
+                    if (value != null) {
+                        indexManager.removeIndex(indexCol, value, i);
+                    }
+                }
+            }
+
+            tableData.put("data", newData);
+            meta.put("last_modified", Instant.now().toString());
+
+            ObjectMapper mapper = new ObjectMapper();
+            try {
+                Files.deleteIfExists(file.toPath());
+
+                try (FileOutputStream fos = new FileOutputStream(file)) {
+                    FileChannel channel = fos.getChannel();
+                    FileLock lock = channel.tryLock();
+                    if (lock == null) {
+                        return response.put("error", "Cannot obtain lock on file");
                     }
 
-//                    System.out.println("DEBUG: Successfully wrote to file: " + file.getPath());
-                } finally {
-                    // Giải phóng khóa nếu đã lấy được
-                    if (lock != null && lock.isValid()) {
+                    try (OutputStreamWriter fw = new OutputStreamWriter(fos, StandardCharsets.UTF_8)) {
+                        fw.write(tableData.toString(2));
+                    } finally {
                         lock.release();
                     }
                 }
             } catch (Exception e) {
-                System.err.println("ERROR: Failed to write to table '" + table + "': " + e.getClass().getName() + " - " + (e.getMessage() != null ? e.getMessage() : "Unknown error"));
-                e.printStackTrace();
-                throw new Exception("Failed to write to table '" + table + "': " + (e.getMessage() != null ? e.getMessage() : "Unknown error"));
+                return response.put("error", "Failed to write updated table '" + table + "': " + e.getMessage());
             }
-        } catch (Exception e) {
-            throw new Exception("Failed to update table '" + table + "': " + e.getMessage());
-        }
 
-        return "Deleted " + deletedRows.size() + " rows from table '" + table + "'.";
+            int rowsAffected = deletedRows.size();
+            response.put("status", "success");
+            response.put("message", "Deleted " + rowsAffected + " row(s) from '" + table + "'");
+            response.put("rowsAffected", rowsAffected);
+            return response;
+
+        } catch (Exception e) {
+            return response.put("error", e.getMessage());
+        }
     }
 
     private static boolean evaluateWhere(NsonObject row, String whereClause, NsonObject types) throws Exception {
-//        System.out.println("[DEBUG] Evaluating WHERE clause: " + whereClause);
+        whereClause = whereClause.trim();
 
-        if (whereClause == null || whereClause.trim().isEmpty()) {
-            return true; // Không có điều kiện WHERE, áp dụng cho tất cả các hàng
+        if (whereClause.toUpperCase().contains(" AND ")) {
+            String[] conditions = whereClause.split("(?i)\\s+AND\\s+", 2);
+            return evaluateWhere(row, conditions[0], types) && evaluateWhere(row, conditions[1], types);
+        } else if (whereClause.toUpperCase().contains(" OR ")) {
+            String[] conditions = whereClause.split("(?i)\\s+OR\\s+", 2);
+            return evaluateWhere(row, conditions[0], types) || evaluateWhere(row, conditions[1], types);
         }
 
-        // Xử lý trường hợp cơ bản: column = value (cả số và chuỗi)
-        Pattern simplePattern = Pattern.compile("(\\w+)\\s*=\\s*([0-9]+|'[^']*')");
-        Matcher simpleMatcher = simplePattern.matcher(whereClause.trim());
+        Pattern opPattern = Pattern.compile("(\\w+)\\s*([<>]=?|!=|=|LIKE|IN)\\s*(.+)", Pattern.CASE_INSENSITIVE);
+        Matcher opMatcher = opPattern.matcher(whereClause);
 
-        if (simpleMatcher.matches()) {
-            String column = simpleMatcher.group(1);
-            String valueStr = simpleMatcher.group(2);
-
-            // Kiểm tra xem cột có tồn tại không
-            if (!types.containsKey(column)) {
-                throw new IllegalArgumentException("Column '" + column + "' does not exist in table schema.");
-            }
-
-            // Lấy giá trị của cột trong hàng hiện tại
-            Object rowValue = row.get(column);
-            if (rowValue == null) return false;
-
-            // Loại bỏ dấu nháy đơn nếu có
-            String cleanValue = valueStr.replaceAll("^'|'$", "");
-
-            // So sánh dựa vào kiểu dữ liệu
-            String colType = types.getString(column);
-
-            if (colType.equals("int") || colType.equals("float") || colType.equals("double")) {
-                try {
-                    double rowNum = Double.parseDouble(rowValue.toString());
-                    double compareNum = Double.parseDouble(cleanValue);
-                    return rowNum == compareNum;
-                } catch (NumberFormatException e) {
-                    throw new IllegalArgumentException("Invalid number format for column '" + column + "': " + e.getMessage());
-                }
-            } else {
-                // So sánh chuỗi
-                return rowValue.toString().equals(cleanValue);
-            }
+        if (!opMatcher.matches()) {
+            throw new IllegalArgumentException("Unsupported WHERE clause: '" + whereClause + "'.");
         }
 
-        // Xử lý các điều kiện phức tạp hơn
-        try {
-            // Tách các điều kiện AND/OR
-            if (whereClause.toUpperCase().contains(" AND ")) {
-                String[] conditions = whereClause.split("(?i)\\s+AND\\s+", 2);
-                return evaluateWhere(row, conditions[0], types) && evaluateWhere(row, conditions[1], types);
-            } else if (whereClause.toUpperCase().contains(" OR ")) {
-                String[] conditions = whereClause.split("(?i)\\s+OR\\s+", 2);
-                return evaluateWhere(row, conditions[0], types) || evaluateWhere(row, conditions[1], types);
+        String column = opMatcher.group(1).trim();
+        String operator = opMatcher.group(2).trim().toUpperCase();
+        String valueExpr = opMatcher.group(3).trim();
+
+        if (!types.containsKey(column)) {
+            throw new IllegalArgumentException("Column '" + column + "' does not exist in table schema.");
+        }
+
+        Object rowValue = row.get(column);
+        if (rowValue == null) return false;
+
+        String colType = types.getString(column);
+
+        if (operator.equals("IN")) {
+            if (!valueExpr.startsWith("(") || !valueExpr.endsWith(")")) {
+                throw new IllegalArgumentException("Invalid IN clause format. Expected: IN (value1, value2, ...)");
             }
 
-            // Xử lý các toán tử <, >, <=, >=, !=, LIKE, IN
-            Pattern opPattern = Pattern.compile("(\\w+)\\s*([<>]=?|!=|=|LIKE|IN)\\s*(.+)", Pattern.CASE_INSENSITIVE);
-            Matcher opMatcher = opPattern.matcher(whereClause.trim());
+            String innerValues = valueExpr.substring(1, valueExpr.length() - 1);
+            String[] values = innerValues.split("\\s*,\\s*");
 
-            if (!opMatcher.matches()) {
-                throw new IllegalArgumentException("Unsupported WHERE clause: '" + whereClause +
-                        "'. Expected format: <column> [=|>|<|>=|<=|!=|LIKE|IN] 'value'|number|(<values>) [AND|OR ...]");
-            }
-
-            String column = opMatcher.group(1).trim();
-            String operator = opMatcher.group(2).trim().toUpperCase();
-            String valueExpr = opMatcher.group(3).trim();
-
-//            System.out.println("[DEBUG] Parsed - Column: " + column + ", Operator: " + operator + ", Value: " + valueExpr);
-
-            if (!types.containsKey(column)) {
-                throw new IllegalArgumentException("Column '" + column + "' does not exist in table schema.");
-            }
-
-            Object rowValue = row.get(column);
-            if (rowValue == null) return false;
-
-            String colType = types.getString(column);
-
-            // Xử lý toán tử IN
-            if (operator.equals("IN")) {
-                if (!valueExpr.startsWith("(") || !valueExpr.endsWith(")")) {
-                    throw new IllegalArgumentException("Invalid IN clause format. Expected: IN (value1, value2, ...)");
-                }
-
-                // Trích xuất giá trị từ dấu ngoặc đơn
-                String innerValues = valueExpr.substring(1, valueExpr.length() - 1);
-                String[] values = innerValues.split("\\s*,\\s*");
-
-                if (colType.equals("int") || colType.equals("float") || colType.equals("double")) {
-                    double rowNum = Double.parseDouble(rowValue.toString());
-                    for (String v : values) {
-                        v = v.replaceAll("^'|'$", ""); // Loại bỏ dấu nháy đơn nếu có
-                        double valNum = Double.parseDouble(v);
-                        if (rowNum == valNum) return true;
-                    }
-                } else {
-                    String rowStr = rowValue.toString();
-                    for (String v : values) {
-                        v = v.replaceAll("^'|'$", ""); // Loại bỏ dấu nháy đơn nếu có
-                        if (rowStr.equals(v)) return true;
-                    }
-                }
-                return false;
-            }
-
-            // Loại bỏ dấu nháy đơn nếu có
-            String cleanValue = valueExpr.replaceAll("^'|'$", "");
-
-            // So sánh dựa vào kiểu dữ liệu và toán tử
             if (colType.equals("int") || colType.equals("float") || colType.equals("double")) {
                 double rowNum = Double.parseDouble(rowValue.toString());
-                double compareNum = Double.parseDouble(cleanValue);
-
-                return switch (operator) {
-                    case "=" -> rowNum == compareNum;
-                    case ">" -> rowNum > compareNum;
-                    case "<" -> rowNum < compareNum;
-                    case ">=" -> rowNum >= compareNum;
-                    case "<=" -> rowNum <= compareNum;
-                    case "!=" -> rowNum != compareNum;
-                    default -> throw new IllegalArgumentException("Unsupported operator '" + operator + "' for numeric comparison.");
-                };
-            } else if (operator.equals("LIKE")) {
-                // Chuyển đổi cú pháp LIKE thành biểu thức chính quy
-                String regex = cleanValue.replace("%", ".*").replace("_", ".");
-                return rowValue.toString().matches(regex);
+                for (String v : values) {
+                    v = v.replaceAll("^'|'$", "");
+                    double valNum = Double.parseDouble(v);
+                    if (rowNum == valNum) return true;
+                }
             } else {
-                // So sánh chuỗi
                 String rowStr = rowValue.toString();
+                for (String v : values) {
+                    v = v.replaceAll("^'|'$", "");
+                    if (rowStr.equals(v)) return true;
+                }
+            }
+            return false;
+        }
 
-                return switch (operator) {
-                    case "=" -> rowStr.equals(cleanValue);
-                    case "!=" -> !rowStr.equals(cleanValue);
-                    case ">" -> rowStr.compareTo(cleanValue) > 0;
-                    case "<" -> rowStr.compareTo(cleanValue) < 0;
-                    case ">=" -> rowStr.compareTo(cleanValue) >= 0;
-                    case "<=" -> rowStr.compareTo(cleanValue) <= 0;
-                    default -> throw new IllegalArgumentException("Unsupported operator '" + operator + "' for string comparison.");
-                };
-            }
-        } catch (Exception e) {
-            if (e instanceof IllegalArgumentException) {
-                throw e;
-            }
-            throw new IllegalArgumentException("Error evaluating WHERE clause: " + e.getMessage());
+        String cleanValue = valueExpr.replaceAll("^'|'$", "");
+
+        if (colType.equals("int") || colType.equals("float") || colType.equals("double")) {
+            double rowNum = Double.parseDouble(rowValue.toString());
+            double compareNum = Double.parseDouble(cleanValue);
+
+            return switch (operator) {
+                case "=" -> rowNum == compareNum;
+                case ">" -> rowNum > compareNum;
+                case "<" -> rowNum < compareNum;
+                case ">=" -> rowNum >= compareNum;
+                case "<=" -> rowNum <= compareNum;
+                case "!=" -> rowNum != compareNum;
+                default -> throw new IllegalArgumentException("Unsupported operator '" + operator + "' for numeric comparison.");
+            };
+        } else if (operator.equals("LIKE")) {
+            String regex = cleanValue.replace("%", ".*").replace("_", ".");
+            return rowValue.toString().matches(regex);
+        } else {
+            String rowStr = rowValue.toString();
+
+            return switch (operator) {
+                case "=" -> rowStr.equals(cleanValue);
+                case "!=" -> !rowStr.equals(cleanValue);
+                case ">" -> rowStr.compareTo(cleanValue) > 0;
+                case "<" -> rowStr.compareTo(cleanValue) < 0;
+                case ">=" -> rowStr.compareTo(cleanValue) >= 0;
+                case "<=" -> rowStr.compareTo(cleanValue) <= 0;
+                default -> throw new IllegalArgumentException("Unsupported operator '" + operator + "' for string comparison.");
+            };
         }
     }
 }

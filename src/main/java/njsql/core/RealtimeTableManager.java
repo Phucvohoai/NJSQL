@@ -3,12 +3,10 @@ package njsql.core;
 import njsql.models.User;
 import njsql.nson.NsonObject;
 import njsql.nson.NsonArray;
-import njsql.utils.TableFormatter;
+import njsql.utils.TableFormatter; // Dù không dùng .format() nhưng vẫn cần import
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.OutputStreamWriter;
+import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.time.Instant;
@@ -19,6 +17,9 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.regex.Pattern;
+import java.util.regex.Matcher;
 
 public class RealtimeTableManager {
     private static final String GREEN = "\u001B[32m";
@@ -26,21 +27,11 @@ public class RealtimeTableManager {
     private static final String RESET = "\u001B[0m";
     private static final ObjectMapper mapper = new ObjectMapper();
 
-    // In-memory storage for tables in real-time mode
     public static final Map<String, List<Map<String, Object>>> ramTables = new ConcurrentHashMap<>();
-    // Tracks dirty tables that need to be flushed
     private static final Set<String> dirtyTables = ConcurrentHashMap.newKeySet();
-    // Scheduler for lazy flushing
     private static final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
-    // Flag to check if the server is running
     private static boolean isServerRunning = false;
 
-    /**
-     * Starts real-time mode for an authenticated user.
-     * @param user The authenticated user
-     * @param scanner Scanner to receive user input
-     * @param command The initial command (e.g., /rt, /rt <table_name>, /rt <db_name>)
-     */
     public static void start(User user, Scanner scanner, String command) {
         if (!isServerRunning) {
             System.out.println(RED + ">> ERROR: Server is not running. Please start the server with /s first." + RESET);
@@ -56,16 +47,13 @@ public class RealtimeTableManager {
 
         String[] tokens = command.trim().split("\\s+");
         if (tokens.length == 1 && tokens[0].equalsIgnoreCase("/rt")) {
-            // Display available tables and prompt for selection
             listTables(user, rootDir, dbName, scanner);
         } else if (tokens.length == 2) {
             String target = tokens[1].trim();
             File targetPath = new File(rootDir + "/" + dbName + "/" + target + ".nson");
             if (targetPath.exists() && targetPath.isFile()) {
-                // Target is a table
                 enterRealtimeMode(user, dbName, target);
             } else {
-                // Check if the target is a database
                 File dbPath = new File(rootDir + "/" + target);
                 if (dbPath.exists() && dbPath.isDirectory()) {
                     user.setCurrentDatabase(target);
@@ -80,9 +68,6 @@ public class RealtimeTableManager {
         }
     }
 
-    /**
-     * Lists all tables in the current database and prompts the user to select one or all.
-     */
     private static void listTables(User user, String rootDir, String dbName, Scanner scanner) {
         File dbFolder = new File(rootDir + "/" + dbName);
         if (!dbFolder.exists() || !dbFolder.isDirectory()) {
@@ -104,175 +89,201 @@ public class RealtimeTableManager {
             System.out.println("- " + tableName);
         }
 
-        System.out.println(">> Enter the table name to monitor (or 'all' to monitor all tables, '/end' to exit): ");
-        while (true) {
-            System.out.print("Realtime> ");
-            String input = scanner.nextLine().trim();
-            if (input.equalsIgnoreCase("/end")) {
-                System.out.println("\u001B[33m<!> \u001B[0mExiting real-time mode...");
-                return;
+        System.out.println(GREEN + ">> Enter table name to monitor, 'all' for all tables, or 'exit' to quit." + RESET);
+        String input = scanner.nextLine().trim().toLowerCase();
+
+        if (input.equals("exit")) {
+            return;
+        } else if (input.equals("all")) {
+            for (String tableName : tableNames) {
+                loadTableToRam(user, dbName, tableName);
             }
-            if (input.equalsIgnoreCase("all")) {
-                for (String tableName : tableNames) {
-                    enterRealtimeMode(user, dbName, tableName);
-                }
-                System.out.println(GREEN + ">> Monitoring all tables in real-time mode." + RESET);
-                break;
-            }
+            System.out.println(GREEN + ">> Monitoring all tables in real-time." + RESET);
+            realtimeLoop(user, scanner, dbName, tableNames);
+        } else {
             if (tableNames.contains(input)) {
-                enterRealtimeMode(user, dbName, input);
-                break;
+                loadTableToRam(user, dbName, input);
+                System.out.println(GREEN + ">> Monitoring table '" + input + "' in real-time." + RESET);
+                realtimeLoop(user, scanner, dbName, Collections.singletonList(input));
             } else {
                 System.out.println(RED + ">> ERROR: Table '" + input + "' not found." + RESET);
             }
         }
     }
 
-    /**
-     * Enters real-time mode for a specific table.
-     */
     private static void enterRealtimeMode(User user, String dbName, String tableName) {
-        String tableKey = dbName + "." + tableName;
-        if (!ramTables.containsKey(tableKey)) {
-            loadTableToRam(user, dbName, tableName);
-        }
-        System.out.println(GREEN + ">> Entered real-time mode for table '" + tableName + "' in database '" + dbName + "'." + RESET);
-        System.out.println(">> Enter /flush to manually flush, /end to exit real-time mode.");
-
-        // Start lazy flush scheduler if not already running
-        startLazyFlushScheduler();
-
-        Scanner scanner = new Scanner(System.in);
-        while (true) {
-            System.out.print("Realtime> ");
-            String input = scanner.nextLine().trim();
-            if (input.equalsIgnoreCase("/end")) {
-                System.out.println("\u001B[33m<!> \u001B[0mExiting real-time mode for '" + tableName + "'...");
-                break;
-            } else if (input.equalsIgnoreCase("/flush")) {
-                flushTableToDisk(user, dbName, tableName, "manual");
-                System.out.println(GREEN + ">> Table '" + tableName + "' has been flushed to disk." + RESET);
-            } else {
-                System.out.println(RED + ">> ERROR: Unknown command. Use /flush or /end." + RESET);
-            }
-        }
+        loadTableToRam(user, dbName, tableName);
+        System.out.println(GREEN + ">> Monitoring table '" + tableName + "' in real-time." + RESET);
+        realtimeLoop(user, new Scanner(System.in), dbName, Collections.singletonList(tableName));
     }
 
-    /**
-     * Loads table data into RAM for real-time mode.
-     */
     private static void loadTableToRam(User user, String dbName, String tableName) {
         String rootDir = UserManager.getRootDirectory(user.getUsername());
-        String tablePath = rootDir + "/" + dbName + "/" + tableName + ".nson";
-        File tableFile = new File(tablePath);
+        String tableKey = dbName + "." + tableName;
+        File tableFile = new File(rootDir + "/" + dbName + "/" + tableName + ".nson");
+
+        if (!tableFile.exists()) {
+            System.out.println(RED + ">> ERROR: Table '" + tableName + "' not found." + RESET);
+            return;
+        }
+
         try {
-            if (tableFile.exists()) {
-                String fileContent = new String(Files.readAllBytes(tableFile.toPath()), StandardCharsets.UTF_8);
-                NsonObject tableData = new NsonObject(fileContent);
-                NsonArray data = tableData.getArray("data");
-                if (data == null) {
-                    throw new Exception("Invalid table structure: Missing 'data' field.");
-                }
-                List<Map<String, Object>> rows = new ArrayList<>();
-                for (int i = 0; i < data.size(); i++) {
-                    NsonObject nsonRow = data.getObject(i);
-                    Map<String, Object> row = new HashMap<>();
-                    for (String key : nsonRow.keySet()) {
-                        row.put(key, nsonRow.get(key));
-                    }
-                    rows.add(row);
-                }
-                ramTables.put(dbName + "." + tableName, rows);
-                System.out.println(GREEN + ">> Table '" + tableName + "' has been loaded into RAM." + RESET);
-            } else {
-                ramTables.put(dbName + "." + tableName, new ArrayList<>());
-                System.out.println(GREEN + ">> Table '" + tableName + "' has been initialized in RAM." + RESET);
+            String fileContent = new String(Files.readAllBytes(tableFile.toPath()), StandardCharsets.UTF_8);
+            NsonObject tableData = NsonObject.parse(fileContent);
+            NsonObject meta = tableData.getObject("_meta");
+            NsonObject types = tableData.getObject("_types");
+            NsonArray data = tableData.getArray("data");
+
+            if (meta == null || types == null || data == null) {
+                System.out.println(RED + ">> ERROR: Invalid table structure: Missing '_meta', '_types', or 'data'." + RESET);
+                return;
             }
+
+            List<Map<String, Object>> ramData = new ArrayList<>();
+            for (int i = 0; i < data.size(); i++) {
+                NsonObject row = (NsonObject) data.getObject(i); // Thêm ép kiểu (NsonObject) cho an toàn
+                Map<String, Object> ramRow = new HashMap<>();
+                for (String key : row.keySet()) {
+                    ramRow.put(key, row.get(key));
+                }
+                ramData.add(ramRow);
+            }
+
+            ramTables.put(tableKey, ramData);
+            System.out.println(GREEN + ">> Table '" + tableName + "' loaded into RAM." + RESET);
         } catch (Exception e) {
-            System.out.println(RED + ">> ERROR: Unable to load table '" + tableName + "': " + e.getMessage() + RESET);
+            System.out.println(RED + ">> ERROR: Failed to load table '" + tableName + "': " + e.getMessage() + RESET);
         }
     }
 
-    /**
-     * Handles INSERT operations in real-time mode.
-     */
+    private static void realtimeLoop(User user, Scanner scanner, String dbName, List<String> tables) {
+        System.out.println(GREEN + ">> Realtime mode commands: SELECT/INSERT/UPDATE/DELETE queries, /flush, /exit" + RESET);
+        while (true) {
+            System.out.print(GREEN + ">> " + RESET);
+            String sql = scanner.nextLine().trim();
+
+            if (sql.equalsIgnoreCase("/exit")) {
+                flushOnExit(user);
+                System.out.println(GREEN + ">> Exiting real-time mode." + RESET);
+                break;
+            } else if (sql.equalsIgnoreCase("/flush")) {
+                for (String tableName : tables) {
+                    flushTableToDisk(user, dbName, tableName, "manual");
+                }
+            } else {
+                String upperSql = sql.toUpperCase();
+                if (upperSql.startsWith("SELECT")) {
+                    handleSelect(sql, user, dbName, tables);
+                } else if (upperSql.startsWith("INSERT")) {
+                    handleInsert(sql, user, dbName, tables.get(0));
+                } else if (upperSql.startsWith("UPDATE")) {
+                    // FIX 1: Bọc trong try...catch
+                    try {
+                        handleUpdate(sql, user, dbName, tables.get(0));
+                    } catch (Exception e) {
+                        System.out.println(RED + ">> ERROR: UPDATE failed: " + e.getMessage() + RESET);
+                    }
+                } else if (upperSql.startsWith("DELETE")) {
+                    handleDelete(sql, user, dbName, tables.get(0));
+                } else {
+                    System.out.println(RED + ">> ERROR: Unsupported command in real-time mode." + RESET);
+                }
+            }
+        }
+    }
+
+    private static void handleSelect(String sql, User user, String dbName, List<String> tables) {
+        try {
+            NsonObject result = SelectHandler.handleForAPI(sql, user);
+            if (result.containsKey("error")) {
+                System.out.println(RED + ">> ERROR: " + result.getString("error") + RESET);
+            } else {
+                NsonArray data = result.getArray("data");
+                // Tạm thời dùng toString() như lần trước
+                System.out.println(data.toString());
+            }
+        } catch (Exception e) {
+            System.out.println(RED + ">> ERROR: SELECT failed: " + e.getMessage() + RESET);
+        }
+    }
+
     public static void handleInsert(String sql, User user, String dbName, String tableName) {
         if (!ramTables.containsKey(dbName + "." + tableName)) {
             loadTableToRam(user, dbName, tableName);
         }
         List<Map<String, Object>> rows = ramTables.get(dbName + "." + tableName);
         try {
-            Map<String, Object> newRow = InsertHandler.parseInsert(sql, user);
+            Map<String, Object> newRow = parseInsertRow(sql, user, dbName, tableName);
             rows.add(newRow);
             dirtyTables.add(dbName + "." + tableName);
             String flushMode = getTableFlushMode(dbName, tableName);
             if (flushMode.equalsIgnoreCase("immediate")) {
                 flushTableToDisk(user, dbName, tableName, "immediate");
             }
-        }
-        catch (Exception e) {
-            System.out.println(RED + ">> ERROR: Unable to perform INSERT in real-time mode: " + e.getMessage() + RESET);
-        }
-    }
-
-    /**
-     * Handles UPDATE operations in real-time mode.
-     */
-    public static void handleUpdate(String sql, User user, String dbName, String tableName) {
-        if (!ramTables.containsKey(dbName + "." + tableName)) {
-            loadTableToRam(user, dbName, tableName);
-        }
-        List<Map<String, Object>> rows = ramTables.get(dbName + "." + tableName);
-        try {
-            UpdateHandler.applyUpdate(sql, rows, user);
-            dirtyTables.add(dbName + "." + tableName);
-            String flushMode = getTableFlushMode(dbName, tableName);
-            if (flushMode.equalsIgnoreCase("immediate")) {
-                flushTableToDisk(user, dbName, tableName, "immediate");
-            }
+            NsonObject nsonRow = new NsonObject();
+            nsonRow.putAll(newRow);
+            List<NsonObject> nsonList = Collections.singletonList(nsonRow);
+            notifyListeners(dbName + "." + tableName, "INSERT", nsonList);
         } catch (Exception e) {
-            System.out.println(RED + ">> ERROR: Unable to perform UPDATE in real-time mode: " + e.getMessage() + RESET);
+            System.out.println(RED + ">> ERROR: INSERT failed: " + e.getMessage() + RESET);
         }
     }
 
-    /**
-     * Flushes table data from RAM to disk.
-     */
+    public static void handleUpdate(String sql, User user, String dbName, String tableName) throws Exception {
+        String result = UpdateHandler.handle(sql, user);
+        List<NsonObject> updatedRows = UpdateHandler.getUpdatedRows();
+
+        String tableKey = dbName + "." + tableName;
+        updateRamTable(tableKey, updatedRows, dbName);
+        notifyListeners(tableKey, "UPDATE", updatedRows);
+
+        NsonArray response = new NsonArray();
+        response.add(new NsonObject().put("message", result));
+        // Tạm thời dùng toString() như lần trước
+        System.out.println(response.toString());
+    }
+
+    private static void handleDelete(String sql, User user, String dbName, String tableName) {
+        // TODO: Tạo DeleteHandler nếu cần
+        System.out.println(RED + ">> DELETE not implemented in real-time mode." + RESET);
+    }
+
+    // FIX: Thêm hàm updateRamTable
+    public static void updateRamTable(String tableKey, List<NsonObject> rows, String dbName) {
+        List<Map<String, Object>> ram = ramTables.get(tableKey);
+        if (ram == null) return;
+        ram.clear();
+        for (NsonObject row : rows) {
+            ram.add(row.toMap());
+        }
+        dirtyTables.add(tableKey);
+    }
+
     private static void flushTableToDisk(User user, String dbName, String tableName, String flushMode) {
         String tableKey = dbName + "." + tableName;
-        if (!ramTables.containsKey(tableKey) || !dirtyTables.contains(tableKey)) {
-            return;
-        }
-        String rootDir = user != null ? UserManager.getRootDirectory(user.getUsername()) : UserManager.getRootDirectory("default");
-        String tablePath = rootDir + "/" + dbName + "/" + tableName + ".nson";
-        File tableFile = new File(tablePath);
+        List<Map<String, Object>> rows = ramTables.get(tableKey);
+        if (rows == null) return;
+
+        String rootDir = UserManager.getRootDirectory(user.getUsername());
+        File tableFile = new File(rootDir + "/" + dbName + "/" + tableName + ".nson");
+
         try {
-            NsonObject tableData;
+            NsonObject tableData = new NsonObject();
             NsonObject meta = new NsonObject();
             NsonObject types = new NsonObject();
             NsonArray data = new NsonArray();
-            if (tableFile.exists()) {
-                String fileContent = new String(Files.readAllBytes(tableFile.toPath()), StandardCharsets.UTF_8);
-                tableData = new NsonObject(fileContent);
-                meta = tableData.getObject("_meta");
-                types = tableData.getObject("_types");
-                if (meta == null || types == null) {
-                    throw new Exception("Invalid table structure: Missing '_meta' or '_types'.");
-                }
-            } else {
-                meta.put("last_modified", Instant.now().toString());
-            }
 
-            List<Map<String, Object>> rows = ramTables.get(tableKey);
+            String fileContent = new String(Files.readAllBytes(tableFile.toPath()), StandardCharsets.UTF_8);
+            NsonObject original = NsonObject.parse(fileContent);
+            meta = original.getObject("_meta");
+            types = original.getObject("_types");
+
             for (Map<String, Object> row : rows) {
                 NsonObject nsonRow = new NsonObject();
-                for (Map.Entry<String, Object> entry : row.entrySet()) {
-                    nsonRow.put(entry.getKey(), entry.getValue());
-                }
+                nsonRow.putAll(row);
                 data.add(nsonRow);
             }
 
-            tableData = new NsonObject();
             tableData.put("_meta", meta);
             tableData.put("_types", types);
             tableData.put("data", data);
@@ -286,53 +297,93 @@ public class RealtimeTableManager {
                 writer.flush();
             }
             dirtyTables.remove(tableKey);
-            System.out.println(GREEN + ">> Table '" + tableName + "' has been flushed to disk (mode: " + flushMode + ")." + RESET);
+            System.out.println(GREEN + ">> Table '" + tableName + "' flushed (mode: " + flushMode + ")." + RESET);
         } catch (Exception e) {
-            System.out.println(RED + ">> ERROR: Unable to flush table '" + tableName + "': " + e.getMessage() + RESET);
+            System.out.println(RED + ">> ERROR: Flush failed: " + e.getMessage() + RESET);
         }
     }
 
-    /**
-     * Starts the lazy flush scheduler.
-     */
     private static void startLazyFlushScheduler() {
         scheduler.scheduleAtFixedRate(() -> {
             for (String tableKey : dirtyTables) {
                 String[] parts = tableKey.split("\\.");
-                String dbName = parts[0];
-                String tableName = parts[1];
+                String dbName = parts[0], tableName = parts[1];
                 if (getTableFlushMode(dbName, tableName).equalsIgnoreCase("lazy")) {
                     flushTableToDisk(null, dbName, tableName, "lazy");
                 }
             }
-        }, 0, 60, TimeUnit.SECONDS); // Flush every 60 seconds
+        }, 0, 60, TimeUnit.SECONDS);
     }
 
-    /**
-     * Flushes all dirty tables when exiting the system.
-     */
     public static void flushOnExit(User user) {
         for (String tableKey : dirtyTables) {
             String[] parts = tableKey.split("\\.");
-            String dbName = parts[0];
-            String tableName = parts[1];
-            flushTableToDisk(user, dbName, tableName, "on-exit");
+            flushTableToDisk(user, parts[0], parts[1], "on-exit");
         }
     }
 
-    /**
-     * Sets the server running status.
-     */
     public static void setServerRunning(boolean running) {
         isServerRunning = running;
+        if (running) startLazyFlushScheduler();
     }
 
-    /**
-     * Gets the flush mode for a table (defaults to lazy for simplicity).
-     */
     private static String getTableFlushMode(String dbName, String tableName) {
-        // For simplicity, assume all tables use lazy mode unless specified
-        // In a full implementation, this could be configured per table in a config file
         return "lazy";
+    }
+
+    public static class TableChange {
+        public final String action;
+        public final List<NsonObject> rows;
+        public final long timestamp;
+        public TableChange(String action, List<NsonObject> rows) {
+            this.action = action;
+            this.rows = rows;
+            this.timestamp = System.currentTimeMillis();
+        }
+    }
+
+    private static final Map<String, List<java.util.function.Consumer<TableChange>>> listeners = new ConcurrentHashMap<>();
+
+    public static void addListener(String tableKey, java.util.function.Consumer<TableChange> listener) {
+        listeners.computeIfAbsent(tableKey, k -> new CopyOnWriteArrayList<>()).add(listener);
+    }
+
+    public static void removeListener(String tableKey, java.util.function.Consumer<TableChange> listener) {
+        List<java.util.function.Consumer<TableChange>> list = listeners.get(tableKey);
+        if (list != null) list.remove(listener);
+    }
+
+    public static void notifyListeners(String tableKey, String action, List<NsonObject> rows) {
+        List<java.util.function.Consumer<TableChange>> list = listeners.get(tableKey);
+        if (list != null) {
+            TableChange change = new TableChange(action, rows);
+            list.forEach(l -> {
+                try { l.accept(change); } catch (Exception e) { e.printStackTrace(); }
+            });
+        }
+    }
+
+    private static Map<String, Object> parseInsertRow(String sql, User user, String dbName, String tableName) throws Exception {
+        Pattern p = Pattern.compile("INSERT INTO \\w+\\s*\\(([^)]+)\\)\\s*VALUES\\s*\\((.+)\\)", Pattern.CASE_INSENSITIVE);
+        Matcher m = p.matcher(sql);
+        if (!m.find()) throw new Exception("Invalid INSERT syntax");
+
+        String[] cols = m.group(1).split(",\\s*");
+        String[] vals = m.group(2).split(",\\s*");
+
+        Map<String, Object> row = new HashMap<>();
+        String rootDir = UserManager.getRootDirectory(user.getUsername());
+        String filePath = rootDir + "/" + dbName + "/" + tableName + ".nson";
+        NsonObject tableData = NsonObject.parse(new String(Files.readAllBytes(new File(filePath).toPath())));
+        NsonObject types = tableData.getObject("_types");
+
+        for (int i = 0; i < cols.length; i++) {
+            String col = cols[i].trim();
+            String val = vals[i].trim().replaceAll("^'|'$", "");
+            String type = types.getString(col);
+            Object parsed = type.equals("int") ? Integer.parseInt(val) : val;
+            row.put(col, parsed);
+        }
+        return row;
     }
 }

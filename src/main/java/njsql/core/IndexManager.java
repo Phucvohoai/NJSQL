@@ -7,7 +7,6 @@ import java.util.TreeMap;
 import java.util.List;
 import java.util.ArrayList;
 
-// Quản lý chỉ mục cho các cột trong bảng
 public class IndexManager {
 
     // Lưu chỉ mục: cột -> giá trị -> danh sách vị trí hàng
@@ -64,5 +63,8 @@ public class IndexManager {
                 }
             }
         }
+    }
+    public Map<String, Map<Object, List<Integer>>> getIndexes() {
+        return indexes;
     }
 }

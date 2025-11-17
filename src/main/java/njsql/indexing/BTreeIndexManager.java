@@ -1,6 +1,7 @@
 package njsql.indexing;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.core.type.TypeReference; // FIX: Thêm import
 
 import java.io.File;
 import java.util.*;
@@ -41,7 +42,8 @@ public class BTreeIndexManager {
             throw new Exception("Table file not found: " + table);
         }
 
-        Map<String, Object> tableJson = mapper.readValue(file, Map.class);
+        // FIX 1 (WARNING): Sửa `unchecked conversion`
+        Map<String, Object> tableJson = mapper.readValue(file, new TypeReference<Map<String, Object>>() {});
         Map<String, Object> indexes = (Map<String, Object>) tableJson.getOrDefault("_indexes", new HashMap<>());
 
         if (indexes.containsKey(indexName)) {
@@ -93,7 +95,8 @@ public class BTreeIndexManager {
             throw new Exception("Table file not found: " + table);
         }
 
-        Map<String, Object> tableJson = mapper.readValue(file, Map.class);
+        // FIX 2 (WARNING): Sửa `unchecked conversion`
+        Map<String, Object> tableJson = mapper.readValue(file, new TypeReference<Map<String, Object>>() {});
         Map<String, Object> indexes = (Map<String, Object>) tableJson.get("_indexes");
 
         if (indexes == null || !indexes.containsKey(indexName)) {
@@ -112,7 +115,9 @@ public class BTreeIndexManager {
     public static void updateIndexOnInsert(String dbPath, String tableName, String column, String indexName, Map<String, Object> record, int position) throws Exception {
         File file = new File(dbPath + "/" + tableName + ".nson");
         ObjectMapper mapper = new ObjectMapper();
-        Map<String, Object> tableJson = mapper.readValue(file, Map.class);
+
+        // FIX 3 (WARNING): Sửa `unchecked conversion`
+        Map<String, Object> tableJson = mapper.readValue(file, new TypeReference<Map<String, Object>>() {});
         Map<String, Object> indexes = (Map<String, Object>) tableJson.getOrDefault("_indexes", new HashMap<>());
         Map<String, Object> index = (Map<String, Object>) indexes.getOrDefault(indexName, new HashMap<>());
 
@@ -149,7 +154,8 @@ public class BTreeIndexManager {
             throw new Exception("Table file not found: " + table);
         }
 
-        Map<String, Object> tableJson = mapper.readValue(file, Map.class);
+        // FIX 4 (WARNING): Sửa `unchecked conversion`
+        Map<String, Object> tableJson = mapper.readValue(file, new TypeReference<Map<String, Object>>() {});
         Map<String, Object> indexes = (Map<String, Object>) tableJson.get("_indexes");
 
         if (indexes == null || !indexes.containsKey(indexName)) {
@@ -183,7 +189,8 @@ public class BTreeIndexManager {
             throw new Exception("Table file not found: " + table);
         }
 
-        Map<String, Object> tableJson = mapper.readValue(file, Map.class);
+        // FIX 5 (WARNING): Sửa `unchecked conversion`
+        Map<String, Object> tableJson = mapper.readValue(file, new TypeReference<Map<String, Object>>() {});
         Map<String, Object> indexes = (Map<String, Object>) tableJson.get("_indexes");
 
         if (indexes == null || !indexes.containsKey(indexName)) {

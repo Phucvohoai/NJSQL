@@ -53,13 +53,21 @@ public class NsonArray extends ArrayList<Object> {
         return toJSONArray().toString(indentFactor);
     }
 
-    // ✅ Giữ nguyên tiện ích Cừu đã có
+    // ✅ FIX: Thêm annotation để tránh warning
     public NsonObject getObject(int index) {
+        if (index < 0 || index >= size()) {
+            return null;
+        }
         Object value = get(index);
         if (value instanceof NsonObject) {
             return (NsonObject) value;
         }
         return null;
+    }
+
+    // ✅ THÊM METHOD MỚI: getNsonObject để rõ ràng hơn
+    public NsonObject getNsonObject(int index) {
+        return getObject(index);
     }
 
     public NsonArray addValue(Object value) {
@@ -83,5 +91,20 @@ public class NsonArray extends ArrayList<Object> {
 
     public void put(Object value) { // tương thích cách dùng cũ
         this.add(value);
+    }
+
+    // ✅ THÊM METHOD CLONE ARRAY
+    public NsonArray cloneArray() {
+        NsonArray cloned = new NsonArray();
+        for (Object item : this) {
+            if (item instanceof NsonObject) {
+                cloned.add(((NsonObject) item).clone());
+            } else if (item instanceof NsonArray) {
+                cloned.add(((NsonArray) item).cloneArray());
+            } else {
+                cloned.add(item);
+            }
+        }
+        return cloned;
     }
 }

@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+option java_package = "njsql.proto";
+option java_outer_classname = "NJSQLProto";
+
+service NJSQL {
+  rpc Execute (QueryRequest) returns (QueryResponse);
+  rpc Subscribe (SubscribeRequest) returns (stream TableUpdate);
+}
+
+message QueryRequest {
+  string username = 1;
+  string password = 2;
+  string database = 3;
+  string sql = 4;
+}
+
+message QueryResponse {
+  bool success = 1;
+  string message = 2;
+  int32 rowsAffected = 3;
+  string error = 4;
+  repeated NsonRow data = 5;
+}
+
+message SubscribeRequest {
+  string username = 1;
+  string password = 2;
+  string database = 3;
+  string table = 4;
+}
+
+message TableUpdate {
+  string action = 1;     // INSERT, UPDATE, DELETE
+  string row = 2;        // JSON string của row
+  int64 timestamp = 3;
+}
+
+message NsonRow {
+  map<string, string> fields = 1;
+}
