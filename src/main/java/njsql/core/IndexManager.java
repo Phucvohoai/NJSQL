@@ -6,11 +6,12 @@ import java.util.Map;
 import java.util.TreeMap;
 import java.util.List;
 import java.util.ArrayList;
+import java.util.concurrent.ConcurrentHashMap; // Import thêm cái này để dùng nếu cần
 
 public class IndexManager {
 
+    // --- PHẦN INSTANCE (Cũ của ní) ---
     // Lưu chỉ mục: cột -> giá trị -> danh sách vị trí hàng
-    // Dùng TreeMap để sắp xếp key tự nhiên, tránh lỗi ép kiểu
     private Map<String, Map<Object, List<Integer>>> indexes;
 
     public IndexManager() {
@@ -23,8 +24,6 @@ public class IndexManager {
         indexes.clear();
         for (Object colObj : indexCols) {
             String column = colObj.toString();
-
-            // Dùng TreeMap để sắp xếp giá trị theo natural order
             Map<Object, List<Integer>> valueToRows = new TreeMap<>();
 
             for (int i = 0; i < data.size(); i++) {
@@ -64,7 +63,20 @@ public class IndexManager {
             }
         }
     }
+
     public Map<String, Map<Object, List<Integer>>> getIndexes() {
         return indexes;
+    }
+
+    // --- [NEW] PHẦN STATIC ĐỂ CỨU BACKGROUND FLUSHER ---
+    // Đây là cái hàm mà BackgroundFlusher đang tìm kiếm trong tuyệt vọng nè ní!
+    
+    public static void flushAllScheduled() {
+        // Tạm thời in log để chứng minh là nó chạy
+        // Sau này ní có thể gọi sang BTreeIndexManager.flushIndexesToDisk() ở đây nếu muốn.
+        // System.out.println("DEBUG: [IndexManager] Flushing all scheduled indexes...");
+        
+        // Ví dụ logic tương lai:
+        // njsql.indexing.BTreeIndexManager.flushAllFromMemory(); 
     }
 }

@@ -4,6 +4,7 @@ import njsql.models.User;
 import njsql.nson.NsonObject;
 import njsql.nson.NsonArray;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature; // [NEW] Import này quan trọng
 
 import java.io.File;
 import java.io.OutputStreamWriter;
@@ -18,124 +19,19 @@ import java.util.List;
 import java.util.ArrayList;
 import java.time.Instant;
 import java.io.IOException;
+import java.util.Collections; // [NEW]
 
 public class DeleteHandler {
 
+    // Hàm handle cho CLI (gọi lại API để tái sử dụng logic)
     public static String handle(String sql, User user) throws Exception {
-        sql = sql.replace(";", "").trim();
-        Pattern pattern = Pattern.compile(
-                "(?i)DELETE FROM (\\w+)(?: WHERE (.+))?$",
-                Pattern.CASE_INSENSITIVE | Pattern.DOTALL
-        );
-        Matcher matcher = pattern.matcher(sql);
-
-        if (!matcher.find()) {
-            throw new IllegalArgumentException("Invalid DELETE syntax. Expected format: DELETE FROM <table> [WHERE <condition>];");
+        NsonObject result = handleForAPI(sql, user);
+        if (result.containsKey("error")) {
+            throw new Exception(result.getString("error"));
         }
-
-        String table = matcher.group(1);
-        String whereClause = matcher.group(2);
-
-        String db = user.getCurrentDatabase();
-        if (db == null) {
-            throw new IllegalArgumentException("No database selected. Please use `USE <dbname>` first.");
-        }
-
-        String rootDir = UserManager.getRootDirectory(user.getUsername());
-        File file = new File(rootDir + "/" + db + "/" + table + ".nson");
-        if (!file.exists()) {
-            throw new IllegalArgumentException("Table '" + table + "' not found in database '" + db + "'.");
-        }
-
-        String fileContent = new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
-        NsonObject tableData;
-        try {
-            tableData = NsonObject.parse(fileContent);
-        } catch (Exception e) {
-            throw new IllegalArgumentException("Failed to parse JSON of table '" + table + "' at '" + file.getPath() + "': " + e.getMessage());
-        }
-
-        NsonObject meta = tableData.getObject("_meta");
-        NsonObject types = tableData.getObject("_types");
-        NsonArray data = tableData.getArray("data");
-        if (meta == null || types == null || data == null) {
-            StringBuilder errorMsg = new StringBuilder("Invalid table structure for '" + table + "'. Missing: ");
-            if (meta == null) errorMsg.append("_meta ");
-            if (types == null) errorMsg.append("_types ");
-            if (data == null) errorMsg.append("data ");
-            throw new IllegalArgumentException(errorMsg.toString());
-        }
-        NsonArray indexCols = meta.getArray("index");
-        if (indexCols == null) {
-            indexCols = new NsonArray();
-        }
-
-        IndexManager indexManager = new IndexManager();
-        indexManager.loadIndexes(file.getPath(), data, indexCols);
-
-        NsonArray newData = new NsonArray();
-        List<Integer> deletedRows = new ArrayList<>();
-        for (int i = 0; i < data.size(); i++) {
-            NsonObject row = data.getObject(i);
-            if (whereClause == null || evaluateWhere(row, whereClause, types)) {
-                deletedRows.add(i);
-            } else {
-                newData.add(row);
-            }
-        }
-
-        for (int i : deletedRows) {
-            NsonObject row = data.getObject(i);
-            for (Object indexColObj : indexCols) {
-                String indexCol = indexColObj.toString();
-                Object value = row.get(indexCol);
-                if (value != null) {
-                    indexManager.removeIndex(indexCol, value, i);
-                }
-            }
-        }
-
-        tableData.put("data", newData);
-        meta.put("last_modified", Instant.now().toString());
-
-        ObjectMapper mapper = new ObjectMapper();
-        try {
-            // Xóa tệp cũ với xử lý lỗi
-            try {
-                Files.deleteIfExists(file.toPath());
-            } catch (Exception e) {
-                System.err.println("ERROR: Failed to delete old file '" + file.getPath() + "': " + e.getClass().getName() + " - " + (e.getMessage() != null ? e.getMessage() : "Unknown error"));
-                throw new Exception("Failed to delete old file '" + table + "': " + (e.getMessage() != null ? e.getMessage() : "Unknown error"));
-            }
-
-            // Ghi tệp mới
-            try (FileOutputStream fos = new FileOutputStream(file)) {
-                // Lấy kênh và khóa tệp sau khi mở luồng
-                FileChannel channel = fos.getChannel();
-                FileLock lock = null;
-
-                try {
-                    // Thử khóa tệp
-                    lock = channel.tryLock();
-                    if (lock == null) {
-                        throw new IOException("Cannot obtain lock on file");
-                    }
-
-                    // Ghi dữ liệu
-                    try (OutputStreamWriter fw = new OutputStreamWriter(fos, StandardCharsets.UTF_8)) {
-                        fw.write(tableData.toString(2));
-                    }
-                } finally {
-                    if (lock != null) {
-                        lock.release();
-                    }
-                }
-            }
-        } catch (Exception e) {
-            throw new Exception("Failed to write updated table '" + table + "': " + e.getMessage());
-        }
-
-        return "Deleted " + deletedRows.size() + " row(s) from '" + table + "'";
+        // Trả về tên bảng để SQLMode in ra (giữ logic cũ của ní)
+        // Hoặc trả về message chi tiết: return result.getString("message");
+        return result.getString("tableName"); 
     }
 
     public static NsonObject handleForAPI(String sql, User user) {
@@ -176,25 +72,26 @@ public class DeleteHandler {
                 return response.put("error", "Invalid table structure for '" + table + "'. Missing '_meta', '_types', or 'data'.");
             }
             NsonArray indexCols = meta.getArray("index");
-            if (indexCols == null) {
-                indexCols = new NsonArray();
-            }
+            if (indexCols == null) indexCols = new NsonArray();
 
             IndexManager indexManager = new IndexManager();
             indexManager.loadIndexes(file.getPath(), data, indexCols);
 
             NsonArray newData = new NsonArray();
-            List<Integer> deletedRows = new ArrayList<>();
+            List<Integer> deletedRowsIndices = new ArrayList<>();
+            
+            // Lọc dữ liệu: Giữ lại dòng KHÔNG thỏa mãn điều kiện
             for (int i = 0; i < data.size(); i++) {
                 NsonObject row = data.getObject(i);
                 if (whereClause == null || evaluateWhere(row, whereClause, types)) {
-                    deletedRows.add(i);
+                    deletedRowsIndices.add(i);
                 } else {
                     newData.add(row);
                 }
             }
 
-            for (int i : deletedRows) {
+            // Xóa index của các dòng bị xóa
+            for (int i : deletedRowsIndices) {
                 NsonObject row = data.getObject(i);
                 for (Object indexColObj : indexCols) {
                     String indexCol = indexColObj.toString();
@@ -208,30 +105,52 @@ public class DeleteHandler {
             tableData.put("data", newData);
             meta.put("last_modified", Instant.now().toString());
 
-            ObjectMapper mapper = new ObjectMapper();
-            try {
-                Files.deleteIfExists(file.toPath());
+            // --- [FIX] GHI FILE BẰNG JACKSON & KHÓA AN TOÀN ---
+            try (FileOutputStream fos = new FileOutputStream(file)) {
+                FileChannel channel = fos.getChannel();
+                FileLock lock = channel.tryLock();
+                if (lock == null) {
+                    return response.put("error", "Cannot obtain lock on file");
+                }
 
-                try (FileOutputStream fos = new FileOutputStream(file)) {
-                    FileChannel channel = fos.getChannel();
-                    FileLock lock = channel.tryLock();
-                    if (lock == null) {
-                        return response.put("error", "Cannot obtain lock on file");
-                    }
-
-                    try (OutputStreamWriter fw = new OutputStreamWriter(fos, StandardCharsets.UTF_8)) {
-                        fw.write(tableData.toString(2));
-                    } finally {
-                        lock.release();
-                    }
+                try {
+                    ObjectMapper mapper = new ObjectMapper();
+                    mapper.enable(SerializationFeature.INDENT_OUTPUT);
+                    String json = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(tableData);
+                    
+                    // Ghi trực tiếp bytes để tránh lỗi ClosedChannelException
+                    fos.write(json.getBytes(StandardCharsets.UTF_8));
+                    fos.flush();
+                } finally {
+                    lock.release();
                 }
             } catch (Exception e) {
+                e.printStackTrace();
                 return response.put("error", "Failed to write updated table '" + table + "': " + e.getMessage());
             }
+            // --------------------------------------------------
 
-            int rowsAffected = deletedRows.size();
+            // --- [FIX] CẬP NHẬT BACKGROUND FLUSHER & REALTIME ---
+            String tableKey = db + "." + table;
+            System.out.println("DEBUG: Marking dirty for " + tableKey + " (DELETE)");
+            njsql.core.BackgroundFlusher.markDirty(tableKey, tableData);
+
+            if (RealtimeTableManager.ramTables.containsKey(tableKey)) {
+                // Với DELETE, cập nhật lại toàn bộ RAM table bằng newData cho đồng bộ
+                List<NsonObject> remainingRows = new ArrayList<>();
+                for(Object obj : newData) {
+                    if (obj instanceof NsonObject) remainingRows.add((NsonObject)obj);
+                }
+                RealtimeTableManager.updateRamTable(tableKey, remainingRows, db);
+                // Thông báo (tạm thời gửi danh sách rỗng hoặc logic diff nếu cần)
+                RealtimeTableManager.notifyListeners(tableKey, "DELETE", Collections.emptyList());
+            }
+            // ----------------------------------------------------
+
+            int rowsAffected = deletedRowsIndices.size();
             response.put("status", "success");
             response.put("message", "Deleted " + rowsAffected + " row(s) from '" + table + "'");
+            response.put("tableName", table); // Để SQLMode dùng
             response.put("rowsAffected", rowsAffected);
             return response;
 

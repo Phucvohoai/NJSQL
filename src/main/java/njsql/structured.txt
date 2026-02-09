@@ -1,0 +1,59 @@
+Folder PATH listing for volume DATA
+Volume serial number is 5235-A0B9
+D:.
+?   NJSQL.java
+?   structured.txt
+?   
+????benchmark
+?       NJSQLBench.java
+?       
+????core
+?       AlterTableHandler.java
+?       Authenticator.java
+?       BackgroundFlusher.java
+?       ChangeReviewer.java
+?       CloneHandler.java
+?       CommitManager.java
+?       ConnectHandler.java
+?       CreateTableHandler.java
+?       DeleteHandler.java
+?       DescribeHandler.java
+?       IndexManager.java
+?       InsertHandler.java
+?       NJSQLConfig.java
+?       NJSQLExecutor.java
+?       PermissionManager.java
+?       PushHandler.java
+?       RealtimeTableManager.java
+?       SelectHandler.java
+?       SQLMode.java
+?       TableUtils.java
+?       UpdateHandler.java
+?       UserManager.java
+?       
+????grpc
+?       NJSQLGrpcService.java
+?       
+????indexing
+?       BTreeIndexManager.java
+?       
+????models
+?       User.java
+?       
+????nson
+?       NSON.class
+?       NSON.java
+?       NsonArray.class
+?       NsonArray.java
+?       NsonObject.class
+?       NsonObject.java
+?       
+????server
+?       NJSQLServer.java
+?       ShareServer.java
+?       
+????utils
+        DBZipper.java
+        FileUtils.java
+        TableFormatter.java
+        

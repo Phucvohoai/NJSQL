@@ -1,41 +1,56 @@
 package njsql.nson;
 
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
+/**
+ * Factory để parse JSON thành NsonObject/NsonArray (full Jackson)
+ */
 public class NSON {
+    private static final ObjectMapper mapper = new ObjectMapper();
+
+    /**
+     * Parse chuỗi JSON thành NsonObject (phải là object root)
+     */
     public static NsonObject parse(String json) {
-        JSONObject jsonObject = new JSONObject(json);
-        return toNsonObject(jsonObject);
+        try {
+            JsonNode node = mapper.readTree(json);
+            if (!node.isObject()) {
+                throw new IllegalArgumentException("JSON root must be an object for NsonObject");
+            }
+            return convertToNsonObject(node);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to parse JSON to NsonObject: " + e.getMessage(), e);
+        }
     }
 
-    private static NsonObject toNsonObject(JSONObject jsonObject) {
+    private static NsonObject convertToNsonObject(JsonNode node) {
         NsonObject nson = new NsonObject();
-        for (String key : jsonObject.keySet()) {
-            Object value = jsonObject.get(key);
-            if (value instanceof JSONObject) {
-                nson.put(key, toNsonObject((JSONObject) value));
-            } else if (value instanceof JSONArray) {
-                nson.put(key, toNsonArray((JSONArray) value));
-            } else {
-                nson.put(key, value);
-            }
-        }
+        node.fields().forEachRemaining(entry -> {
+            String key = entry.getKey();
+            JsonNode valueNode = entry.getValue();
+            nson.put(key, convertJsonNode(valueNode));
+        });
         return nson;
     }
 
-    private static NsonArray toNsonArray(JSONArray jsonArray) {
-        NsonArray array = new NsonArray();
-        for (int i = 0; i < jsonArray.length(); i++) {
-            Object value = jsonArray.get(i);
-            if (value instanceof JSONObject) {
-                array.add(toNsonObject((JSONObject) value));
-            } else if (value instanceof JSONArray) {
-                array.add(toNsonArray((JSONArray) value));
-            } else {
-                array.add(value);
-            }
+    private static Object convertJsonNode(JsonNode node) {
+        if (node.isObject()) {
+            return convertToNsonObject(node);
+        } else if (node.isArray()) {
+            NsonArray array = new NsonArray();
+            node.elements().forEachRemaining(child -> array.add(convertJsonNode(child)));
+            return array;
+        } else if (node.isTextual()) {
+            return node.textValue();
+        } else if (node.isIntegralNumber()) {
+            return node.asLong();
+        } else if (node.isFloatingPointNumber()) {
+            return node.asDouble();
+        } else if (node.isBoolean()) {
+            return node.asBoolean();
+        } else {
+            return null;
         }
-        return array;
     }
 }

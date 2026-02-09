@@ -160,16 +160,25 @@ public class SQLMode {
                             try {
                                 String tableName = InsertHandler.getTableName(sql);
                                 String tableKey = dbName + "." + tableName;
+                                
+                                // Logic Realtime giữ nguyên
                                 if (RealtimeTableManager.ramTables.containsKey(tableKey)) {
                                     RealtimeTableManager.handleInsert(sql, user, dbName, tableName);
                                     System.out.println(">> \u001B[32mSuccess: Data inserted into table | \u001B[0m" + tableName + "\u001B[32m | in real-time mode." + RESET);
                                 } else {
                                     String dbPath = rootDir + "/" + dbName;
-                                    InsertHandler.handle(sql, user.getUsername(), dbPath);
-                                    System.out.println(">> \u001B[32mSuccess: Data inserted into table | \u001B[0m" + tableName + "\u001B[32m |." + RESET);
+                                    
+                                    // --- FIX Ở ĐÂY NÈ ---
+                                    String result = InsertHandler.handle(sql, user.getUsername(), dbPath);
+                                    if (result.startsWith("ERROR:")) {
+                                        System.out.println(RED + ">> " + result + RESET);
+                                    } else {
+                                        System.out.println(">> \u001B[32mSuccess: Data inserted into table | \u001B[0m" + tableName + "\u001B[32m |." + RESET);
+                                    }
+                                    // -------------------
                                 }
                             } catch (Exception e) {
-                                System.out.println(RED + ">> ERROR: Failed to insert data: " + e.getMessage() + RESET);
+                                System.out.println(RED + ">> ERROR: Failed to insert: " + e.getMessage() + RESET);
                             }
                         }
                         else if (lower.startsWith("delete from")) {

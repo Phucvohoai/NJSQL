@@ -10,9 +10,13 @@ import njsql.core.UpdateHandler;
 import njsql.core.UserManager;
 import njsql.models.User;
 import njsql.nson.NsonObject;
-import io.grpc.Server;
-import io.grpc.ServerBuilder;
-import njsql.grpc.NJSQLGrpcService;
+
+// --- [TẠM KHÓA gRPC ĐỂ FIX LỖI NoClassDefFoundError] ---
+// import io.grpc.Server;
+// import io.grpc.ServerBuilder;
+// import njsql.grpc.NJSQLGrpcService;
+// -------------------------------------------------------
+
 import java.io.File;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -22,11 +26,11 @@ import java.util.function.Consumer;
 
 public class NJSQLServer {
 
-    private static Server grpcServer;
+    // private static Server grpcServer; // Tạm khóa
 
     public static void start(Consumer<String> logger) {
         try {
-            // REST Server
+            // --- 1. REST Server (Cái này quan trọng cho Web Demo) ---
             int restPort = 2801;
             HttpServer httpServer = HttpServer.create(new InetSocketAddress("0.0.0.0", restPort), 0);
             httpServer.createContext("/query", new NsonFileHandler(logger));
@@ -34,21 +38,24 @@ public class NJSQLServer {
             httpServer.start();
             logger.accept("\u001B[36m[REST] Server running on http://0.0.0.0:" + restPort + "\u001B[0m");
 
-            // gRPC Server
+            /* --- 2. gRPC Server (Tạm khóa vì thiếu thư viện) ---
             int grpcPort = 50051;
             grpcServer = ServerBuilder.forPort(grpcPort)
                     .addService(new NJSQLGrpcService())
                     .build()
                     .start();
             logger.accept("\u001B[35m[gRPC] Server running on port " + grpcPort + "\u001B[0m");
+            */
 
             // Shutdown hook
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 logger.accept("\u001B[33mShutting down servers...\u001B[0m");
                 httpServer.stop(0);
+                /*
                 if (grpcServer != null) {
                     grpcServer.shutdown();
                 }
+                */
             }));
 
         } catch (IOException e) {
@@ -66,15 +73,15 @@ public class NJSQLServer {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
             String client = exchange.getRemoteAddress().toString();
-            logger.accept("> Incoming request from " + client);
+            // logger.accept("> Incoming request from " + client); // Comment bớt cho đỡ spam log
 
+            // CORS Headers (Quan trọng cho Web)
             exchange.getResponseHeaders().add("Access-Control-Allow-Origin", "*");
             exchange.getResponseHeaders().add("Access-Control-Allow-Headers", "*");
             exchange.getResponseHeaders().add("Access-Control-Allow-Methods", "POST, OPTIONS");
 
             if ("OPTIONS".equalsIgnoreCase(exchange.getRequestMethod())) {
                 exchange.sendResponseHeaders(204, -1);
-                logger.accept("> Preflight (OPTIONS) request");
                 return;
             }
 
@@ -85,16 +92,13 @@ public class NJSQLServer {
 
             try {
                 String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
-                logger.accept("> Request body: " + body);
+                // logger.accept("> Body: " + body);
 
                 NsonObject request = NsonObject.parse(body);
                 String username = request.getString("username");
                 String password = request.getString("password");
                 String database = request.getString("database");
                 String sql = request.getString("sql");
-
-                logger.accept("> Auth request for user: " + username + " | DB: " + database);
-                logger.accept("> SQL: " + sql);
 
                 NsonObject authResult = UserManager.checkLogin(username, password);
                 if (!authResult.getBoolean("success")) {
@@ -127,22 +131,22 @@ public class NJSQLServer {
                     return;
                 }
 
+                // Log câu lệnh SQL đã chạy thành công (Màu xanh lá)
+                logger.accept("\u001B[32m[API] Executed: \u001B[0m" + sql);
+
                 if (response.containsKey("error")) {
                     sendError(exchange, 500, response.getString("error"), logger);
                 } else {
                     sendResponse(exchange, 200, response.toString(2), logger);
                 }
-                logger.accept("\u001B[32m>> Query executed: \u001B[0m" + sql);
 
             } catch (Exception e) {
                 sendError(exchange, 500, "Query processing error: " + e.getMessage(), logger);
-                logger.accept("\u001B[1m Query failed: \u001B[0m" + e.getMessage());
                 e.printStackTrace();
             }
         }
 
         private void sendResponse(HttpExchange exchange, int statusCode, String responseBody, Consumer<String> logger) throws IOException {
-            logger.accept("Server response: " + responseBody);
             exchange.getResponseHeaders().set("Content-Type", "application/json; charset=UTF-8");
             byte[] responseBytes = responseBody.getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(statusCode, responseBytes.length);
@@ -154,11 +158,7 @@ public class NJSQLServer {
         private void sendError(HttpExchange exchange, int statusCode, String message, Consumer<String> logger) throws IOException {
             NsonObject error = new NsonObject().put("error", message);
             sendResponse(exchange, statusCode, error.toString(2), logger);
-            logger.accept("\u001B[31m Error (" + statusCode + "): \u001B[0m" + message);
+            logger.accept("\u001B[31m[API Error] \u001B[0m" + message);
         }
-    }
-
-    public static void main(String[] args) {
-        start(System.out::println);
     }
 }

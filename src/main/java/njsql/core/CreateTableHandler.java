@@ -16,17 +16,12 @@ import java.nio.channels.FileLock;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 
-/**
- * Handles SQL CREATE TABLE commands.
- */
 public class CreateTableHandler {
 
     private static final Set<String> SUPPORTED_TYPES = Set.of(
             "int", "datetime", "text", "float", "double", "boolean"
     );
 
-    // FIX 1: Sửa Regex. \$$ thành \\( và \ $$ thành \\)
-    // Thêm \s* để cho phép có hoặc không có khoảng trắng
     private static final Pattern VARCHAR_PATTERN = Pattern.compile("varchar\\(\\s*\\d+\\s*\\)", Pattern.CASE_INSENSITIVE);
 
     public static String handle(String sql, User user) throws Exception {
@@ -43,7 +38,6 @@ public class CreateTableHandler {
             throw new Exception("Invalid syntax: Missing parentheses for column definitions.");
         }
 
-        // FIX 2: Sửa Regex. \$$ thành \\( và \ $$ thành \\)
         Pattern pattern = Pattern.compile("CREATE\\s+TABLE\\s+(\\w+)\\s*\\((.*)\\)\\s*(;)?", Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
         Matcher matcher = pattern.matcher(sql);
         if (!matcher.find()) {
@@ -68,13 +62,10 @@ public class CreateTableHandler {
             columnLine = columnLine.trim();
             if (columnLine.isEmpty()) continue;
 
-            // PRIMARY KEY
             if (columnLine.toUpperCase().startsWith("PRIMARY KEY")) {
-                // FIX 3: Sửa Regex. \$$ thành \\( và \ $$ thành \\)
                 Pattern pkPattern = Pattern.compile("PRIMARY\\s+KEY\\s*\\(\\s*([^)]+)\\s*\\)", Pattern.CASE_INSENSITIVE);
                 Matcher pkMatcher = pkPattern.matcher(columnLine);
                 if (pkMatcher.find()) {
-                    // FIX 4: Xóa typo "mensagens"
                     String[] pkCols = pkMatcher.group(1).trim().split("\\s*,\\s*");
                     for (String col : pkCols) {
                         col = col.trim();
@@ -87,7 +78,6 @@ public class CreateTableHandler {
                 continue;
             }
 
-            // FOREIGN KEY
             if (columnLine.toUpperCase().startsWith("FOREIGN KEY")) {
                 Pattern fkPattern = Pattern.compile(
                         "FOREIGN KEY\\s*\\(([^)]+)\\)\\s+REFERENCES\\s+(\\w+)\\s*\\(([^)]+)\\)",
@@ -102,22 +92,16 @@ public class CreateTableHandler {
                     if (fkCols.length != refCols.length) {
                         throw new Exception("FOREIGN KEY column count mismatch with REFERENCES.");
                     }
-
                     for (String col : fkCols) {
                         if (!types.containsKey(col.trim())) {
                             throw new Exception("FOREIGN KEY column '" + col.trim() + "' not defined.");
                         }
                     }
-
                     NsonObject fk = new NsonObject();
-
-                    // THỰC TẾ: Tạo NsonArray bằng add()
                     NsonArray fkColsArray = new NsonArray();
                     for (String col : fkCols) fkColsArray.add(col.trim());
-
                     NsonArray refColsArray = new NsonArray();
                     for (String col : refCols) refColsArray.add(col.trim());
-
                     fk.put("columns", fkColsArray);
                     fk.put("references_table", refTable);
                     fk.put("references_columns", refColsArray);
@@ -126,7 +110,6 @@ public class CreateTableHandler {
                 continue;
             }
 
-            // Regular column
             Pattern colPattern = Pattern.compile("(\\w+)\\s+([\\w()]+)(?:\\s+(PRIMARY KEY|INDEX|UNIQUE|AUTO_INCREMENT))*", Pattern.CASE_INSENSITIVE);
             Matcher colMatcher = colPattern.matcher(columnLine);
             if (!colMatcher.find()) {
@@ -137,13 +120,8 @@ public class CreateTableHandler {
             String colType = colMatcher.group(2).trim().toLowerCase();
             String modifiers = colMatcher.group(3);
 
-            if (types.containsKey(colName)) {
-                throw new Exception("Duplicate column: '" + colName + "'");
-            }
-
-            if (!isSupportedType(colType)) {
-                throw new Exception("Unsupported type: '" + colType + "'");
-            }
+            if (types.containsKey(colName)) throw new Exception("Duplicate column: '" + colName + "'");
+            if (!isSupportedType(colType)) throw new Exception("Unsupported type: '" + colType + "'");
 
             types.put(colName, colType);
 
@@ -189,9 +167,20 @@ public class CreateTableHandler {
 
         ObjectMapper mapper = new ObjectMapper();
         mapper.enable(SerializationFeature.INDENT_OUTPUT);
-        String json = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(nsonTable);
 
-        writeWithLock(tableFile, json);
+        writeWithLock(tableFile, nsonTable, mapper);
+
+        String tableKey = currentDb + "." + tableName;
+        System.out.println("DEBUG: Marking dirty for " + tableKey + " (CREATE)");
+        njsql.core.BackgroundFlusher.markDirty(tableKey, nsonTable);
+
+        // --- [FIX] CẬP NHẬT CACHE TYPES VÀO RAM ---
+        if (RealtimeTableManager.ramTables != null) {
+            RealtimeTableManager.ramTables.put(tableKey, new ArrayList<>());
+            // QUAN TRỌNG: Nạp types vào cache để Insert đọc được ngay, không cần đọc đĩa
+            RealtimeTableManager.tableSchemas.put(tableKey, types); 
+            RealtimeTableManager.notifyListeners(tableKey, "CREATE", Collections.emptyList());
+        }
 
         return tableName;
     }
@@ -218,14 +207,18 @@ public class CreateTableHandler {
         return columns.toArray(new String[0]);
     }
 
-    private static void writeWithLock(File file, String content) throws Exception {
-        try (FileOutputStream fos = new FileOutputStream(file);
-             FileChannel channel = fos.getChannel();
-             FileLock lock = channel.lock();
-             OutputStreamWriter writer = new OutputStreamWriter(fos, StandardCharsets.UTF_8)) {
-
-            writer.write(content);
-            writer.flush();
+    private static void writeWithLock(File file, NsonObject nson, ObjectMapper mapper) throws Exception {
+        try (FileOutputStream fos = new FileOutputStream(file)) {
+            FileChannel channel = fos.getChannel();
+            FileLock lock = channel.tryLock();
+            if (lock == null) throw new IOException("Cannot obtain lock on file " + file.getName());
+            try {
+                String json = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(nson);
+                fos.write(json.getBytes(StandardCharsets.UTF_8));
+                fos.flush();
+            } finally {
+                lock.release();
+            }
         }
     }
 

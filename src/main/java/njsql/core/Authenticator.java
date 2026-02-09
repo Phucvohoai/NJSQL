@@ -1,6 +1,6 @@
 package njsql.core;
 
-import org.json.JSONObject;
+import org.json.JSONObject; // Ensure this import is present
 import njsql.models.User;
 import njsql.nson.NsonObject;
 

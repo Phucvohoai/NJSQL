@@ -1,29 +1,36 @@
 package njsql.nson;
 
-import org.json.JSONObject;
-import org.json.JSONArray;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
 
+/**
+ * NsonObject - Wrapper cho JSON Object, dùng Jackson để parse/serialize
+ */
 public class NsonObject extends LinkedHashMap<String, Object> implements Cloneable {
+    private static final ObjectMapper mapper = new ObjectMapper();
 
     public NsonObject() {
         super();
     }
 
+    /**
+     * Parse từ chuỗi JSON object
+     */
     public NsonObject(String json) {
         super();
-        JSONObject jsonObject = new JSONObject(json);
-        for (String key : jsonObject.keySet()) {
-            Object val = jsonObject.get(key);
-            if (val instanceof JSONObject) {
-                put(key, new NsonObject(val.toString()));
-            } else if (val instanceof JSONArray) {
-                put(key, new NsonArray(val.toString()));
-            } else {
-                put(key, val);
+        try {
+            JsonNode node = mapper.readTree(json);
+            if (!node.isObject()) {
+                throw new IllegalArgumentException("JSON must be an object");
             }
+            addFromJsonNode(node);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to parse JSON object: " + e.getMessage(), e);
         }
     }
 
@@ -31,13 +38,63 @@ public class NsonObject extends LinkedHashMap<String, Object> implements Cloneab
         return new NsonObject(json);
     }
 
+    protected void addFromJsonNode(JsonNode node) {   // ← thêm protected
+        node.fields().forEachRemaining(entry -> {
+            String key = entry.getKey();
+            JsonNode child = entry.getValue();
+            put(key, convertJsonNode(child));
+        });
+    }
+
+    private Object convertJsonNode(JsonNode node) {
+    if (node == null || node.isNull()) {
+        return null;
+    }
+    if (node.isObject()) {
+        NsonObject obj = new NsonObject();  // constructor rỗng
+        obj.addFromJsonNode(node);          // parse recursive trực tiếp
+        return obj;
+    } else if (node.isArray()) {
+        NsonArray arr = new NsonArray();    // constructor rỗng
+        arr.addFromJsonNode(node);          // parse recursive trực tiếp
+        return arr;
+    } else if (node.isTextual()) {
+        return node.textValue();
+    } else if (node.isIntegralNumber()) {
+        return node.asLong();
+    } else if (node.isFloatingPointNumber()) {
+        return node.asDouble();
+    } else if (node.isBoolean()) {
+        return node.asBoolean();
+    } else {
+        return node.asText();  // fallback an toàn
+    }
+}
+
+    /**
+     * Convert sang ObjectNode của Jackson
+     */
+    public ObjectNode toObjectNode() {
+        ObjectNode node = mapper.createObjectNode();
+        forEach((key, value) -> {
+            if (value instanceof NsonObject) {
+                node.set(key, ((NsonObject) value).toObjectNode());
+            } else if (value instanceof NsonArray) {
+                node.set(key, ((NsonArray) value).toArrayNode());
+            } else {
+                node.putPOJO(key, value);
+            }
+        });
+        return node;
+    }
+
     @Override
     public String toString() {
-        return toJSONObject().toString();
+        return toObjectNode().toString();
     }
 
     public String toString(int indentFactor) {
-        return toJSONObject().toString(indentFactor);
+        return toObjectNode().toPrettyString();
     }
 
     @Override
@@ -48,18 +105,12 @@ public class NsonObject extends LinkedHashMap<String, Object> implements Cloneab
 
     public NsonArray getArray(String key) {
         Object value = get(key);
-        if (value instanceof NsonArray) {
-            return (NsonArray) value;
-        }
-        return null;
+        return value instanceof NsonArray ? (NsonArray) value : null;
     }
 
     public NsonObject getObject(String key) {
         Object value = get(key);
-        if (value instanceof NsonObject) {
-            return (NsonObject) value;
-        }
-        return null;
+        return value instanceof NsonObject ? (NsonObject) value : null;
     }
 
     public String getString(String key) {
@@ -67,9 +118,19 @@ public class NsonObject extends LinkedHashMap<String, Object> implements Cloneab
         return value != null ? value.toString() : null;
     }
 
+    public String getString(String key, String defaultValue) {
+        Object value = get(key);
+        return value != null ? value.toString() : defaultValue;
+    }
+
     public int getInt(String key) {
         Object value = get(key);
         return value instanceof Number ? ((Number) value).intValue() : 0;
+    }
+
+    public int optInt(String key, int defaultValue) {
+        Object value = get(key);
+        return value instanceof Number ? ((Number) value).intValue() : defaultValue;
     }
 
     public boolean getBoolean(String key) {
@@ -77,51 +138,41 @@ public class NsonObject extends LinkedHashMap<String, Object> implements Cloneab
         return value instanceof Boolean ? (Boolean) value : false;
     }
 
-    public NsonObject getAsObject() {
-        return this;
-    }
-
-    public JSONObject toJSONObject() {
-        JSONObject jsonObject = new JSONObject();
-        for (Map.Entry<String, Object> entry : this.entrySet()) {
-            Object value = entry.getValue();
-            if (value instanceof NsonObject) {
-                jsonObject.put(entry.getKey(), ((NsonObject) value).toJSONObject());
-            } else if (value instanceof NsonArray) {
-                jsonObject.put(entry.getKey(), ((NsonArray) value).toJSONArray());
-            } else {
-                jsonObject.put(entry.getKey(), value);
-            }
-        }
-        return jsonObject;
-    }
-
     public boolean optBoolean(String key, boolean defaultValue) {
         Object value = get(key);
-        if (value instanceof Boolean) {
-            return (Boolean) value;
-        }
-        return defaultValue;
+        return value instanceof Boolean ? (Boolean) value : defaultValue;
+    }
+
+    public NsonObject getAsObject() {
+        return this;
     }
 
     public Map<String, Object> toMap() {
         return new LinkedHashMap<>(this);
     }
 
-    // ✅ THÊM METHOD CLONE - QUAN TRỌNG!
+    /**
+     * Clone an toàn và nhanh bằng Jackson
+     */
     @Override
     public NsonObject clone() {
-        NsonObject cloned = new NsonObject();
-        for (Map.Entry<String, Object> entry : this.entrySet()) {
-            Object value = entry.getValue();
-            if (value instanceof NsonObject) {
-                cloned.put(entry.getKey(), ((NsonObject) value).clone());
-            } else if (value instanceof NsonArray) {
-                cloned.put(entry.getKey(), ((NsonArray) value).cloneArray());
-            } else {
-                cloned.put(entry.getKey(), value);
-            }
+        try {
+            return new NsonObject(this.toString());
+        } catch (Exception e) {
+            throw new RuntimeException("Clone failed: " + e.getMessage(), e);
         }
-        return cloned;
+    }
+
+    // Bonus: Merge từ object khác
+    public NsonObject merge(NsonObject other) {
+        if (other != null) {
+            putAll(other);
+        }
+        return this;
+    }
+
+    // Bonus: Xóa các key có value null
+    public void removeNulls() {
+        entrySet().removeIf(entry -> entry.getValue() == null);
     }
 }

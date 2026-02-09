@@ -304,6 +304,22 @@ public class NJSQL {
                         }
                     }
                     break;
+                    
+                case "/flush":
+                    if (currentUser == null) {
+                        System.out.println("\u001B[31m>> Please login first.\u001B[0m");
+                    } else {
+                        System.out.println(">> Force flushing data to disk...");
+                        // Gọi hàm này để lưu ngay lập tức (nhớ qua BackgroundFlusher mở public nha)
+                        // Nếu chưa có hàm forceFlushAll, ní dùng tạm logic in log này để test flow trước
+                        try {
+                             njsql.core.BackgroundFlusher.forceFlushAll(); 
+                             System.out.println(">> \u001B[32m[Success] All dirty tables saved to disk!\u001B[0m");
+                        } catch (Exception e) {
+                             System.out.println(">> Error flushing: " + e.getMessage());
+                        }
+                    }
+                    break;
 
                 default:
                     System.out.println(">> Unknown command. Try \u001B[33m/help.\u001B[0m");

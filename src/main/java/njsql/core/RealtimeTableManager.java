@@ -3,8 +3,9 @@ package njsql.core;
 import njsql.models.User;
 import njsql.nson.NsonObject;
 import njsql.nson.NsonArray;
-import njsql.utils.TableFormatter; // Dù không dùng .format() nhưng vẫn cần import
+import njsql.utils.TableFormatter;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
@@ -28,9 +29,16 @@ public class RealtimeTableManager {
     private static final ObjectMapper mapper = new ObjectMapper();
 
     public static final Map<String, List<Map<String, Object>>> ramTables = new ConcurrentHashMap<>();
+    // [NEW] Cache luôn cấu trúc bảng (Types) vào RAM để đỡ phải đọc file
+    public static final Map<String, NsonObject> tableSchemas = new ConcurrentHashMap<>();
+    
     private static final Set<String> dirtyTables = ConcurrentHashMap.newKeySet();
     private static final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
     private static boolean isServerRunning = false;
+
+    static {
+        mapper.enable(SerializationFeature.INDENT_OUTPUT);
+    }
 
     public static void start(User user, Scanner scanner, String command) {
         if (!isServerRunning) {
@@ -141,7 +149,7 @@ public class RealtimeTableManager {
 
             List<Map<String, Object>> ramData = new ArrayList<>();
             for (int i = 0; i < data.size(); i++) {
-                NsonObject row = (NsonObject) data.getObject(i); // Thêm ép kiểu (NsonObject) cho an toàn
+                NsonObject row = (NsonObject) data.getObject(i);
                 Map<String, Object> ramRow = new HashMap<>();
                 for (String key : row.keySet()) {
                     ramRow.put(key, row.get(key));
@@ -150,6 +158,9 @@ public class RealtimeTableManager {
             }
 
             ramTables.put(tableKey, ramData);
+            // [NEW] Cache luôn Schema vào RAM
+            tableSchemas.put(tableKey, types);
+            
             System.out.println(GREEN + ">> Table '" + tableName + "' loaded into RAM." + RESET);
         } catch (Exception e) {
             System.out.println(RED + ">> ERROR: Failed to load table '" + tableName + "': " + e.getMessage() + RESET);
@@ -177,7 +188,6 @@ public class RealtimeTableManager {
                 } else if (upperSql.startsWith("INSERT")) {
                     handleInsert(sql, user, dbName, tables.get(0));
                 } else if (upperSql.startsWith("UPDATE")) {
-                    // FIX 1: Bọc trong try...catch
                     try {
                         handleUpdate(sql, user, dbName, tables.get(0));
                     } catch (Exception e) {
@@ -199,7 +209,6 @@ public class RealtimeTableManager {
                 System.out.println(RED + ">> ERROR: " + result.getString("error") + RESET);
             } else {
                 NsonArray data = result.getArray("data");
-                // Tạm thời dùng toString() như lần trước
                 System.out.println(data.toString());
             }
         } catch (Exception e) {
@@ -216,10 +225,12 @@ public class RealtimeTableManager {
             Map<String, Object> newRow = parseInsertRow(sql, user, dbName, tableName);
             rows.add(newRow);
             dirtyTables.add(dbName + "." + tableName);
+            
             String flushMode = getTableFlushMode(dbName, tableName);
             if (flushMode.equalsIgnoreCase("immediate")) {
                 flushTableToDisk(user, dbName, tableName, "immediate");
             }
+            
             NsonObject nsonRow = new NsonObject();
             nsonRow.putAll(newRow);
             List<NsonObject> nsonList = Collections.singletonList(nsonRow);
@@ -239,16 +250,13 @@ public class RealtimeTableManager {
 
         NsonArray response = new NsonArray();
         response.add(new NsonObject().put("message", result));
-        // Tạm thời dùng toString() như lần trước
         System.out.println(response.toString());
     }
 
     private static void handleDelete(String sql, User user, String dbName, String tableName) {
-        // TODO: Tạo DeleteHandler nếu cần
         System.out.println(RED + ">> DELETE not implemented in real-time mode." + RESET);
     }
 
-    // FIX: Thêm hàm updateRamTable
     public static void updateRamTable(String tableKey, List<NsonObject> rows, String dbName) {
         List<Map<String, Object>> ram = ramTables.get(tableKey);
         if (ram == null) return;
@@ -273,10 +281,28 @@ public class RealtimeTableManager {
             NsonObject types = new NsonObject();
             NsonArray data = new NsonArray();
 
-            String fileContent = new String(Files.readAllBytes(tableFile.toPath()), StandardCharsets.UTF_8);
-            NsonObject original = NsonObject.parse(fileContent);
-            meta = original.getObject("_meta");
-            types = original.getObject("_types");
+            // Vẫn cần đọc file để lấy _meta và _types gốc nếu chưa có trong RAM
+            // Nhưng hiện tại ta đã cache _types, nên có thể tối ưu sau. 
+            // Tạm thời giữ nguyên đoạn đọc này nhưng bọc try-catch kỹ hơn hoặc dùng cache.
+            // Để an toàn, ta dùng cache nếu có.
+            
+            if (tableSchemas.containsKey(tableKey)) {
+                types = tableSchemas.get(tableKey);
+                // Meta có thể lấy từ file hoặc tạo mới nếu cần, tạm thời đọc file cho chắc ăn về meta
+                try {
+                    String fileContent = new String(Files.readAllBytes(tableFile.toPath()), StandardCharsets.UTF_8);
+                    NsonObject original = NsonObject.parse(fileContent);
+                    meta = original.getObject("_meta");
+                } catch (Exception ex) {
+                    // Nếu đọc file lỗi (do race condition), ta dùng meta mặc định hoặc bỏ qua
+                    if(meta == null) meta = new NsonObject().put("last_modified", Instant.now().toString());
+                }
+            } else {
+                String fileContent = new String(Files.readAllBytes(tableFile.toPath()), StandardCharsets.UTF_8);
+                NsonObject original = NsonObject.parse(fileContent);
+                meta = original.getObject("_meta");
+                types = original.getObject("_types");
+            }
 
             for (Map<String, Object> row : rows) {
                 NsonObject nsonRow = new NsonObject();
@@ -289,15 +315,20 @@ public class RealtimeTableManager {
             tableData.put("data", data);
             meta.put("last_modified", Instant.now().toString());
 
-            try (FileOutputStream fos = new FileOutputStream(tableFile);
-                 FileChannel channel = fos.getChannel();
-                 FileLock lock = channel.lock();
-                 OutputStreamWriter writer = new OutputStreamWriter(fos, StandardCharsets.UTF_8)) {
-                writer.write(tableData.toString(2));
-                writer.flush();
+            try (FileOutputStream fos = new FileOutputStream(tableFile)) {
+                FileChannel channel = fos.getChannel();
+                FileLock lock = channel.tryLock();
+                if (lock == null) throw new IOException("Cannot obtain lock on file");
+                
+                try {
+                    String json = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(tableData);
+                    fos.write(json.getBytes(StandardCharsets.UTF_8));
+                    fos.flush();
+                } finally {
+                    lock.release();
+                }
             }
             dirtyTables.remove(tableKey);
-            System.out.println(GREEN + ">> Table '" + tableName + "' flushed (mode: " + flushMode + ")." + RESET);
         } catch (Exception e) {
             System.out.println(RED + ">> ERROR: Flush failed: " + e.getMessage() + RESET);
         }
@@ -307,9 +338,8 @@ public class RealtimeTableManager {
         scheduler.scheduleAtFixedRate(() -> {
             for (String tableKey : dirtyTables) {
                 String[] parts = tableKey.split("\\.");
-                String dbName = parts[0], tableName = parts[1];
-                if (getTableFlushMode(dbName, tableName).equalsIgnoreCase("lazy")) {
-                    flushTableToDisk(null, dbName, tableName, "lazy");
+                if (getTableFlushMode(parts[0], parts[1]).equalsIgnoreCase("lazy")) {
+                    flushTableToDisk(null, parts[0], parts[1], "lazy");
                 }
             }
         }, 0, 60, TimeUnit.SECONDS);
@@ -328,9 +358,10 @@ public class RealtimeTableManager {
     }
 
     private static String getTableFlushMode(String dbName, String tableName) {
-        return "lazy";
+        return "immediate"; 
     }
 
+    // ... (Phần Listener giữ nguyên) ...
     public static class TableChange {
         public final String action;
         public final List<NsonObject> rows;
@@ -341,18 +372,14 @@ public class RealtimeTableManager {
             this.timestamp = System.currentTimeMillis();
         }
     }
-
     private static final Map<String, List<java.util.function.Consumer<TableChange>>> listeners = new ConcurrentHashMap<>();
-
     public static void addListener(String tableKey, java.util.function.Consumer<TableChange> listener) {
         listeners.computeIfAbsent(tableKey, k -> new CopyOnWriteArrayList<>()).add(listener);
     }
-
     public static void removeListener(String tableKey, java.util.function.Consumer<TableChange> listener) {
         List<java.util.function.Consumer<TableChange>> list = listeners.get(tableKey);
         if (list != null) list.remove(listener);
     }
-
     public static void notifyListeners(String tableKey, String action, List<NsonObject> rows) {
         List<java.util.function.Consumer<TableChange>> list = listeners.get(tableKey);
         if (list != null) {
@@ -363,6 +390,7 @@ public class RealtimeTableManager {
         }
     }
 
+    // [FIX] Hàm này đã được sửa để ưu tiên đọc Cache
     private static Map<String, Object> parseInsertRow(String sql, User user, String dbName, String tableName) throws Exception {
         Pattern p = Pattern.compile("INSERT INTO \\w+\\s*\\(([^)]+)\\)\\s*VALUES\\s*\\((.+)\\)", Pattern.CASE_INSENSITIVE);
         Matcher m = p.matcher(sql);
@@ -372,10 +400,19 @@ public class RealtimeTableManager {
         String[] vals = m.group(2).split(",\\s*");
 
         Map<String, Object> row = new HashMap<>();
-        String rootDir = UserManager.getRootDirectory(user.getUsername());
-        String filePath = rootDir + "/" + dbName + "/" + tableName + ".nson";
-        NsonObject tableData = NsonObject.parse(new String(Files.readAllBytes(new File(filePath).toPath())));
-        NsonObject types = tableData.getObject("_types");
+        String tableKey = dbName + "." + tableName;
+        
+        // --- FIX: Đọc Types từ RAM thay vì đọc File (Tránh race condition) ---
+        NsonObject types = tableSchemas.get(tableKey);
+        if (types == null) {
+            // Nếu xui quá chưa có trong RAM thì mới phải đọc đĩa (nhưng CreateTable đã nạp rồi nên yên tâm)
+            String rootDir = UserManager.getRootDirectory(user.getUsername());
+            String filePath = rootDir + "/" + dbName + "/" + tableName + ".nson";
+            NsonObject tableData = NsonObject.parse(new String(Files.readAllBytes(new File(filePath).toPath())));
+            types = tableData.getObject("_types");
+            tableSchemas.put(tableKey, types); // Cache luôn
+        }
+        // -------------------------------------------------------------------
 
         for (int i = 0; i < cols.length; i++) {
             String col = cols[i].trim();

@@ -6,6 +6,7 @@ import njsql.nson.NsonObject;
 import njsql.indexing.BTreeIndexManager;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.SerializationFeature; // Import thêm cái này cho đẹp
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
@@ -59,8 +60,9 @@ public class UpdateHandler {
         }
 
         ObjectMapper mapper = new ObjectMapper();
+        mapper.enable(SerializationFeature.INDENT_OUTPUT); // Format JSON đẹp
 
-        // Đọc file thành Map để lấy _indexes (an toàn, không warning)
+        // Đọc file thành Map để lấy _indexes
         TypeReference<Map<String, Object>> typeRef = new TypeReference<>() {};
         Map<String, Object> tableJson = mapper.readValue(fileContent, typeRef);
         Object indexesObj = tableJson.get("_indexes");
@@ -69,9 +71,7 @@ public class UpdateHandler {
         updatedRows.clear();
         int updatedCount = 0;
 
-        // === VÒNG LẶP CHÍNH - ĐÃ SỬA LỖI ===
         for (int i = 0; i < data.size(); i++) {
-            // FIX: Cast từ ArrayList.get() thành NsonObject
             Object rawRow = data.get(i);
             if (rawRow == null || !(rawRow instanceof NsonObject)) {
                 throw new IllegalStateException("Row at index " + i + " is not a valid NsonObject");
@@ -111,7 +111,14 @@ public class UpdateHandler {
         if (updatedCount > 0) {
             meta.put("last_modified", Instant.now().toString());
             nson.put("_meta", meta);
+            
+            // --- [FIX 1] Ghi file an toàn (tránh ClosedChannelException) ---
             writeWithLock(file, nson, mapper);
+
+            // --- [FIX 2] Báo cáo BackgroundFlusher ---
+            String tableKey = db + "." + table;
+            System.out.println("DEBUG: Marking dirty for " + tableKey + " (UPDATE)");
+            njsql.core.BackgroundFlusher.markDirty(tableKey, nson);
         }
 
         String tableKey = db + "." + table;
@@ -229,24 +236,27 @@ public class UpdateHandler {
         try { Integer.parseInt(s); return true; } catch (Exception e) { return false; }
     }
 
+    // --- [FIXED] GHI FILE AN TOÀN TUYỆT ĐỐI ---
     private static void writeWithLock(File file, NsonObject nson, ObjectMapper mapper) throws Exception {
-        FileOutputStream fos = null;
-        FileChannel channel = null;
-        FileLock lock = null;
-        OutputStreamWriter writer = null;
-        try {
-            fos = new FileOutputStream(file);
-            channel = fos.getChannel();
-            lock = channel.lock();
-            String json = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(nson);
-            writer = new OutputStreamWriter(fos, StandardCharsets.UTF_8);
-            writer.write(json);
-            writer.flush();
-        } finally {
-            if (lock != null) try { lock.release(); } catch (Exception ignored) {}
-            if (writer != null) try { writer.close(); } catch (Exception ignored) {}
-            if (channel != null) try { channel.close(); } catch (Exception ignored) {}
-            if (fos != null) try { fos.close(); } catch (Exception ignored) {}
+        try (FileOutputStream fos = new FileOutputStream(file)) {
+            FileChannel channel = fos.getChannel();
+            FileLock lock = channel.tryLock();
+            
+            if (lock == null) {
+                throw new IOException("Cannot obtain lock on file");
+            }
+
+            try {
+                // 1. Convert sang chuỗi JSON
+                String json = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(nson);
+                
+                // 2. Ghi byte trực tiếp (tránh dùng Writer gây đóng luồng sớm)
+                fos.write(json.getBytes(StandardCharsets.UTF_8));
+                fos.flush(); // Đẩy dữ liệu xuống đĩa ngay
+            } finally {
+                // 3. Giải phóng lock (An toàn)
+                lock.release();
+            }
         }
     }
 

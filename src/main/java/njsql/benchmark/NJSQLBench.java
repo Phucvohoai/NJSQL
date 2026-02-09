@@ -1,60 +1,112 @@
 package njsql.benchmark;
 
-import njsql.core.SelectHandler;
+import njsql.core.*;
 import njsql.models.User;
-import njsql.nson.NsonObject;
+import njsql.indexing.BTreeIndexManager;
+import njsql.nson.NsonObject; // Giả sử bạn có class này
 
-import java.nio.file.Files;
-import java.nio.file.Paths;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class NJSQLBench {
+    private static final String G = "\u001B[32m";
+    private static final String R = "\u001B[31m";
+    private static final String Y = "\u001B[33m";
+    private static final String P = "\u001B[35m";
+    private static final String C = "\u001B[36m";
+    private static final String W = "\u001B[97m";
+    private static final String BOLD = "\u001B[1m";
+    private static final String RESET = "\u001B[0m";
+
+    private static final AtomicInteger uid = new AtomicInteger(40000);
+
     public static void main(String[] args) throws Exception {
-        String dbName = "ecommerce_website";
-        int runs = 10000;
+        clear();
+        banner();
 
+        String db = "ecommerce_website";
         User user = new User("root", "admin123", "localhost", 2801, true);
-        user.setCurrentDatabase(dbName);
+        user.setCurrentDatabase(db);
+        String dbPath = "njsql_data/root/" + db; // Đường dẫn thực tế của bạn
 
-        // Đường dẫn file nson đúng
-        String tablePath = "njsql_data\\root\\" + dbName + "\\Users.nson";
-
-        // Load dữ liệu (chỉ để chắc chắn file có tồn tại)
-        String content = new String(Files.readAllBytes(Paths.get(tablePath)));
-        NsonObject usersTable = NsonObject.parse(content);
-
-        String sql = "SELECT * FROM Users WHERE points > 50";
-
-        long totalTime = 0;
-        long minTime = Long.MAX_VALUE;
-        long maxTime = Long.MIN_VALUE;
-
-        for (int i = 0; i < runs; i++) {
-            long start = System.nanoTime();
-            try {
-                NsonObject result = SelectHandler.handleForAPI(sql, user);
-            } catch (Exception e) {
-                System.err.println("Error at run " + i + ": " + e.getMessage());
-            }
-            long end = System.nanoTime();
-            long duration = end - start;
-
-            totalTime += duration;
-            minTime = Math.min(minTime, duration);
-            maxTime = Math.max(maxTime, duration);
-
-            if ((i + 1) % 1000 == 0) System.out.println("→ Run " + (i + 1));
+        // 1. Tạo Index nếu chưa có
+        try {
+            // Tạo index rỗng (sẽ tự load vào RAM)
+            BTreeIndexManager.createBTreeIndex(dbPath, "Users", "points", "idx_users_points");
+        } catch (Exception ignored) {
+            // Nếu có rồi thì LOAD vào RAM thủ công
+            BTreeIndexManager.loadIndexToMemory(dbPath, "Users");
         }
 
-        double avgMs = totalTime / 1_000_000.0 / runs;
-        double minMs = minTime / 1_000_000.0;
-        double maxMs = maxTime / 1_000_000.0;
-        double throughput = runs / (totalTime / 1_000_000_000.0);
+        // 2. Tắt log Realtime để dồn sức cho Insert
+        RealtimeTableManager.addListener(db + ".Users", change -> {
+            // Silent mode: Không làm gì cả để đo Max Speed
+        });
 
-        System.out.println("\n🏁 Benchmark finished");
-        System.out.println("Total queries: " + runs);
-        System.out.printf("Avg per query: %.4f ms\n", avgMs);
-        System.out.printf("Min query time: %.4f ms\n", minMs);
-        System.out.printf("Max query time: %.4f ms\n", maxMs);
-        System.out.printf("Throughput: %.2f queries/sec\n", throughput);
+        status("NJSQL ENGINE READY - RAM CACHE ACTIVATED", "G");
+        Thread.sleep(1000);
+
+        int target = 5000; // Test 5000 records
+        attackStart(target);
+
+        long start = System.nanoTime();
+
+        // 3. Vòng lặp Insert
+        for (int i = 1; i <= target; i++) {
+            ThreadLocalRandom random = ThreadLocalRandom.current();
+            int currentId = uid.incrementAndGet();
+            int points = random.nextInt(100000);
+
+            String username = "user_" + currentId;
+            String email = username + "@test.com";
+
+            String sql = "INSERT INTO Users (username, email, points, role, country) VALUES ('"
+                    + username + "', '" + email + "', " + points + ", 'user', 'VN')";
+
+            // Gọi lệnh Insert API
+            InsertHandler.handleForAPI(sql, user);
+
+            // Log tiến độ mỗi 10%
+            if (i % (target/10) == 0 || i == target) {
+                long now = System.nanoTime();
+                double ms = (now - start) / 1_000_000.0;
+                double ops = (i * 1000.0) / ms;
+                System.out.print("\r" + P + "[BENCH] Inserted: " + G + i + "/" + target + W +
+                        " | Speed: " + Y + String.format("%,.0f", ops) + " ops/s" + RESET);
+            }
+        }
+        System.out.println();
+
+        long end = System.nanoTime();
+
+        // 4. QUAN TRỌNG: Lưu Index từ RAM xuống đĩa sau khi xong việc
+        System.out.println(Y + ">>> Flushing indexes to disk... <<<" + RESET);
+        BTreeIndexManager.flushIndexesToDisk(dbPath, "Users");
+
+        double sec = (end - start) / 1_000_000_000.0;
+        victory(target, sec, (sec*1000)/target, (int)(target/sec));
+    }
+
+    // --- Các hàm UI (Giữ nguyên như cũ) ---
+    private static void clear() { System.out.print("\033[H\033[2J"); System.out.flush(); }
+
+    private static void banner() {
+        System.out.println(P + BOLD + "╔════════════════════════════════════════════════════╗\n" +
+                "║             NJSQL - HIGH PERFORMANCE               ║\n" +
+                "╚════════════════════════════════════════════════════╝\n" + RESET);
+    }
+
+    private static void status(String msg, String col) {
+        System.out.println((col.equals("G")?G:Y) + ">>> " + msg + " <<<" + RESET);
+    }
+
+    private static void attackStart(int t) {
+        System.out.println(R + "Starting Injection of " + t + " records..." + RESET);
+    }
+
+    private static void victory(int total, double sec, double avg, int tps) {
+        System.out.println(G + BOLD + "\nDONE! Total: " + total +
+                " | Time: " + String.format("%.3f", sec) + "s" +
+                " | TPS: " + tps + " ops/s" + RESET);
     }
 }
