@@ -2,10 +2,10 @@
 setlocal EnableDelayedExpansion
 title Run NJSQL Engine
 cls
+
 chcp 65001 > nul
 
 echo Checking Maven and dependencies...
-REM Check Maven
 where mvn >nul 2>nul
 if %errorlevel% neq 0 (
     echo ERROR: Maven not found! Install from https://maven.apache.org/
